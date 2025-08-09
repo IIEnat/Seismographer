@@ -1,0 +1,51 @@
+<!-- For syntax comparion see linegraph_plotly.html both generate identical line graphs -->
+<script src="https://d3js.org/d3.v7.min.js"></script>
+
+<svg id="d3-chart" width="600" height="300"></svg>
+
+<script>
+  const data = [
+    {time: 0, amplitude: 10},
+    {time: 1, amplitude: 15},
+    {time: 2, amplitude: 13},
+    {time: 3, amplitude: 17},
+    {time: 4, amplitude: 14},
+    {time: 5, amplitude: 18}
+  ];
+
+  const svg = d3.select("#d3-chart"),
+        margin = {top: 20, right: 30, bottom: 30, left: 40},
+        width = +svg.attr("width") - margin.left - margin.right,
+        height = +svg.attr("height") - margin.top - margin.bottom;
+
+  const x = d3.scaleLinear()
+      .domain(d3.extent(data, d => d.time))
+      .range([0, width]);
+
+  const y = d3.scaleLinear()
+      .domain([0, d3.max(data, d => d.amplitude)])
+      .range([height, 0]);
+
+  const line = d3.line()
+      .x(d => x(d.time))
+      .y(d => y(d.amplitude));
+
+  const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+  // X Axis
+  g.append("g")
+    .attr("transform", `translate(0,${height})`)
+    .call(d3.axisBottom(x));
+
+  // Y Axis
+  g.append("g")
+    .call(d3.axisLeft(y));
+
+  // Line path
+  g.append("path")
+    .datum(data)
+    .attr("fill", "none")
+    .attr("stroke", "steelblue")
+    .attr("stroke-width", 1.5)
+    .attr("d", line);
+</script>

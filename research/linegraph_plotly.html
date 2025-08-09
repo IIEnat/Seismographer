@@ -1,0 +1,21 @@
+<!-- For syntax comparion see linegraph_d3.html both generate identical line graphs -->
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+<div id="plotly-chart"></div>
+
+<script>
+  const trace = {
+    x: [0, 1, 2, 3, 4, 5],               // Time
+    y: [10, 15, 13, 17, 14, 18],         // Amplitude
+    mode: 'lines',
+    type: 'scatter'
+  };
+
+  const data = [trace];
+
+  Plotly.newPlot('plotly-chart', data, {
+    title: 'Seismic Waveform',
+    xaxis: { title: 'Time (s)' },
+    yaxis: { title: 'Amplitude' }
+  });
+</script>
