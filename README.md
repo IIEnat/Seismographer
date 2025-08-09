@@ -29,7 +29,7 @@ Seismographer is an interactive tool that visualizes real-time seismic activity 
 | Kathleen     | 24091081       | kathisabella      |
 
 ## How to Run (Linux only)
-## THIS CAN BE SIMPLIFIED
+# THIS CAN BE SIMPLIFIED
 
 1. Clone the repository
 ```
