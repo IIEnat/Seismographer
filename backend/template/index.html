@@ -1,83 +1,13 @@
 <!doctype html>
 <html>
-<head>
-  <meta charset="utf-8" />
-  <title>Seismographer</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  />
-  <style>
-    html, body, #map { height: 100%; margin: 0; }
-    .legend { position:absolute; right:12px; top:12px; background:#fff; padding:6px 8px; border-radius:4px; font:12px/1.2 Arial; }
-    .legend .bar { width: 12px; height: 160px; background: linear-gradient(180deg, #f6e347, #3ec7b7, #3a4cc7); margin-right:8px; display:inline-block; vertical-align:middle;}
-  </style>
-</head>
-<body>
-  <div id="map"></div>
-  <div class="legend"><span class="bar"></span><span id="legend-labels">hi → low</span></div>
-
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
-    const map = L.map('map', { zoomControl:true }).setView([-31.354, 115.878], 16);
-    L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
-      subdomains:['mt0','mt1','mt2','mt3'], maxZoom: 20
-    }).addTo(map);
-
-    const stations = new Map();   // code -> {lat, lon, marker}
-    let minVal = Infinity, maxVal = -Infinity;
-
-    function colorFor(v) {
-      // map v ∈ [minVal,maxVal] to a hue (blue -> teal -> yellow)
-      if (!isFinite(minVal) || !isFinite(maxVal) || minVal === maxVal) return '#cccccc';
-      const t = (v - minVal) / (maxVal - minVal); // 0..1
-      const hue = 220 - 220*t;                    // 220 (blue) -> 0 (yellow)
-      return `hsl(${hue}, 70%, 50%)`;
-    }
-
-    async function loadStations() {
-      const resp = await fetch('/api/stations');
-      const data = await resp.json();
-      data.forEach(s => {
-        const m = L.circleMarker([s.lat, s.lon], {
-          radius: 22, weight: 0, fillOpacity: 0.55, color: '#999'
-        }).addTo(map).bindTooltip(`${s.code}`, {permanent:false});
-        stations.set(s.code, { ...s, marker: m, value: null });
-      });
-      if (data.length) {
-        const latlngs = data.map(s => [s.lat, s.lon]);
-        map.fitBounds(latlngs, { padding:[40,40] });
-      }
-    }
-
-    async function pollLatest() {
-      try {
-        const resp = await fetch('/api/readings/latest');
-        const latest = await resp.json(); // { "NET.STA": {value, ts, window_s}, ... }
-        // compute global min/max each tick
-        const vals = Object.values(latest).map(x => x.value).filter(Number.isFinite);
-        if (vals.length) {
-          minVal = Math.min(...vals);
-          maxVal = Math.max(...vals);
-          document.getElementById('legend-labels').textContent =
-            `${maxVal.toFixed(3)} → ${minVal.toFixed(3)}`;
-        }
-        for (const [code, payload] of Object.entries(latest)) {
-          const s = stations.get(code);
-          if (s && s.marker) {
-            s.value = payload.value;
-            s.marker.setStyle({ fillColor: colorFor(s.value) });
-          }
-        }
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setTimeout(pollLatest, 2000); // update every 2s
-      }
-    }
-
-    loadStations().then(pollLatest);
-  </script>
-</body>
+  <head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Seismographer</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  </head>
+  <body style="margin:0">
+    <div id="root"></div>
+    <script type="module" src="/static/assets/index.js"></script>
+  </body>
 </html>

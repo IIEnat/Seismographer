@@ -1,0 +1,12 @@
+{
+  "name": "seismographer",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix frontend run build",
+    "serve": "python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000",
+    "dev": "concurrently \"python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload\" \"npm --prefix frontend run dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
