@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Seismic Drilldown</title>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 12px; }
+    #controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px; }
+    select, input, button { padding:4px 6px; }
+    #chart { width: 100%; height: 600px; border: 1px solid #ddd; }
+  </style>
+</head>
+<body>
+  <h2>Seismic Drilldown</h2>
+
+  <div id="controls">
+    <label>Station <select id="station"></select></label>
+    <label>File/Hour <select id="file"></select></label>
+    <label>Channel <select id="channel"></select></label>
+    <label>LOD max points <input id="maxpts" type="number" value="3000" min="200" step="200" style="width:6em"></label>
+    <button id="load">Load</button>
+  </div>
+
+  <div id="chart"></div>
+
+  <script>
+    const chart    = document.getElementById('chart');
+    const $station = document.getElementById('station');
+    const $file    = document.getElementById('file');
+    const $chan    = document.getElementById('channel');
+    const $maxpts  = document.getElementById('maxpts');
+    const $btn     = document.getElementById('load');
+
+    let state = { station:null, file:null, channel:null };
+    let updating = false;     // guard to ignore our own relayouts
+    let relayoutBound = false;
+
+    const baseLayout = {
+      title: '',
+      xaxis: { rangeslider: { visible:false } },
+      yaxis: { fixedrange:false },
+      margin:{ l:40, r:10, t:40, b:40 },
+      uirevision: 'keep'      // do not reset view on react
+    };
+
+    function fail(msg) {
+      console.error(msg);
+      alert(msg);
+    }
+
+    async function apiGet(url) {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) {
+        throw new Error(`${url} → ${res.status} ${res.statusText}`);
+      }
+      return res.json();
+    }
+
+    async function init() {
+      // Ensure chart exists so we can attach handlers later
+      await Plotly.newPlot(chart, [], baseLayout, {responsive:true});
+
+      // Load stations
+      let s;
+      try {
+        s = await apiGet('/stations');
+      } catch (e) {
+        fail(`Request failed.\nOpen this page via http://127.0.0.1:8000/index.html and run serve_data.py.\n\n${e.message}`);
+        return;
+      }
+      if (!s.stations || s.stations.length === 0) {
+        fail('No stations found. Check SEISMIC_DATA_ROOT and restart serve_data.py.');
+        return;
+      }
+      $station.innerHTML = s.stations.map(id => `<option value="${id}">${id}</option>`).join('');
+      $station.value = s.stations[0];
+      await loadFiles();
+
+      // Attach zoom handler once
+      if (!relayoutBound) {
+        chart.on('plotly_relayout', onRelayout);
+        relayoutBound = true;
+      }
+    }
+
+    async function loadFiles() {
+      state.station = $station.value;
+      const f = await apiGet(`/files?station=${encodeURIComponent(state.station)}`);
+      if (!f.files || f.files.length === 0) {
+        fail(`No files under station "${state.station}".`);
+        return;
+      }
+      $file.innerHTML = f.files.map(it => `<option value="${it.file}">${it.hour} — ${it.file}</option>`).join('');
+      $file.value = f.files[0].file;
+      await loadMeta();
+    }
+
+    async function loadMeta() {
+      state.station = $station.value;
+      state.file    = $file.value;
+      const m = await apiGet(`/meta?station=${encodeURIComponent(state.station)}&file=${encodeURIComponent(state.file)}`);
+      const channels = (m.channels && m.channels.length) ? m.channels : ['HNZ'];
+      $chan.innerHTML = channels.map(c => `<option value="${c}">${c}</option>`).join('');
+      $chan.value = channels[0];
+    }
+
+    function buildTraces(resp) {
+      const x0 = new Date(resp.x0);
+      const x1 = new Date(resp.x1);
+
+      if (resp.mode === 'line') {
+        const y = resp.payload.y;
+        const n = y.length;
+        const xs = new Array(n);
+        for (let i = 0; i < n; i++) {
+          xs[i] = new Date(x0.getTime() + i * resp.dt * 1000);
+        }
+        return [{ x: xs, y, type:'scatter', mode:'lines', name:'signal' }];
+      } else {
+        const ymin = resp.payload.ymin;
+        const ymax = resp.payload.ymax;
+        const n = ymin.length;
+        const xs = new Array(n);
+        for (let i = 0; i < n; i++) {
+          // place bin centers evenly across [x0, x1]
+          xs[i] = new Date(x0.getTime() + (i + 0.5) * (x1 - x0) / n);
+        }
+        return [
+          { x: xs, y: ymin, type:'scatter', mode:'lines', name:'min', line:{width:1} },
+          { x: xs, y: ymax, type:'scatter', mode:'lines', name:'max', line:{width:1} }
+        ];
+      }
+    }
+
+    async function loadData(startISO=null, endISO=null, keepRange=null) {
+      const q = new URLSearchParams({
+        station: state.station,
+        file: state.file,
+        channel: state.channel,
+        max_points: $maxpts.value
+      });
+      if (startISO && endISO) { q.set('start', startISO); q.set('end', endISO); }
+
+      const resp = await apiGet(`/data?${q.toString()}`);
+      const traces = buildTraces(resp);
+
+      const rangeToKeep = keepRange ? keepRange : [new Date(resp.x0), new Date(resp.x1)];
+      const layout = {
+        ...baseLayout,
+        title: `${state.station} · ${state.file} · ${state.channel}`,
+        xaxis: { ...baseLayout.xaxis, range: rangeToKeep }
+      };
+
+      updating = true;
+      await Plotly.react(chart, traces, layout, {responsive:true});
+      updating = false;
+    }
+
+    async function onRelayout(ev) {
+      if (updating) return; // ignore our own react
+
+      // Normalize Plotly payload (could be array or keyed fields; values can be ISO or ms)
+      const r0 = ev['xaxis.range[0]'] ?? (Array.isArray(ev['xaxis.range']) ? ev['xaxis.range'][0] : null);
+      const r1 = ev['xaxis.range[1]'] ?? (Array.isArray(ev['xaxis.range']) ? ev['xaxis.range'][1] : null);
+      if (!r0 || !r1) return;
+
+      const toISO = v => (typeof v === 'number' ? new Date(v) : new Date(v)).toISOString();
+      const iso0 = toISO(r0);
+      const iso1 = toISO(r1);
+
+      await loadData(iso0, iso1, [new Date(iso0), new Date(iso1)]);
+    }
+
+    // UI wiring
+    $station.addEventListener('change', loadFiles);
+    $file.addEventListener('change', loadMeta);
+    $btn.addEventListener('click', async () => {
+      state.station = $station.value;
+      state.file    = $file.value;
+      state.channel = $chan.value;
+      await loadData(); // full file first
+    });
+
+    // Kickoff
+    window.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>
