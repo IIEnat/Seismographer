@@ -10,7 +10,7 @@ import numpy as np
 
 # Adjusted root to match your structure
 SEISMIC_DATA_ROOT = os.path.join(os.path.dirname(__file__), "Seismic Data", "2022")
-PORT = 8000
+PORT = 8080
 
 
 def list_stations():
