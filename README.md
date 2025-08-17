@@ -23,7 +23,6 @@ per-station **per-second aggregates** (RMS or mean) on a Leaflet map.
 ├─ seedlink_multi_sender.py      # Simulator: per-second MiniSEED packets (250 samples each)
 ├─ seedlink_multi_receiver.py    # Multi-source receiver + HTTP server (/live + static)
 ├─ index_map.html                # Leaflet frontend (1 km circles, colored by per-second value)
-├─ requirements.txt
 └─ README.md
 ```
 
