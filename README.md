@@ -13,12 +13,8 @@ per-station **per-second aggregates** (RMS or mean) on a Leaflet map.
 ## Requirements
 
 - Python 3.9+
-- Install dependencies:
-  ```bash
-  pip install -r requirements.txt
-  ```
-
----
+- Obspy
+- Numpy
 
 ## Files
 
