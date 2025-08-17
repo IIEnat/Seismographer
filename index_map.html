@@ -1,0 +1,191 @@
+
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Realtime Seismic Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 12px; font-family: system-ui, Segoe UI, Roboto, sans-serif; }
+    h2 { margin: 4px 0 8px; }
+    #bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px; }
+    .chip { padding:6px 10px; border:1px solid #ccc; border-radius:999px; background:#fff; font-size:13px; }
+    #map { height: 560px; border: 1px solid #ddd; border-radius:12px; }
+    #legend { background: rgba(255,255,255,.97); padding:10px 12px; border-radius:10px; line-height: 1.2; box-shadow: 0 6px 18px rgba(0,0,0,.2); }
+    #legend h4 { margin: 0 0 6px; font-size: 14px; letter-spacing:.2px; }
+    #legend .row { display:flex; align-items:center; gap:8px; margin:4px 0; font-size: 13px; }
+    #legend .swatch { width:16px; height:16px; border-radius:3px; border:1px solid rgba(0,0,0,.25); }
+    #stations { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+    .badge { font-size:12px; padding:4px 6px; border:1px solid #ddd; border-radius:6px; }
+    code { background: rgba(0,0,0,.05); padding:2px 6px; border-radius:6px; }
+    .rmsTip { background: rgba(0,0,0,.75); color:#fff; border:none; border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
+    .rmsTip .leaflet-tooltip-content { margin:6px 8px; font-size:12px; line-height:1.2; }
+    @media (max-width: 640px) { #map { height: 60vh; } }
+  </style>
+</head>
+<body>
+  <h2>Realtime Seismic Map</h2>
+  <div id="bar">
+    <span class="chip">Polling: <span id="pollMs">1000</span> ms</span>
+    <label class="chip">Change interval:
+      <select id="pollSelect">
+        <option value="250">250 ms</option>
+        <option value="500">500 ms</option>
+        <option value="1000" selected>1000 ms</option>
+        <option value="2000">2000 ms</option>
+        <option value="5000">5000 ms</option>
+      </select>
+    </label>
+    <span class="chip">API: <code>/live</code></span>
+  </div>
+  <div id="map"></div>
+  <div id="stations"></div>
+
+<script>
+// ---------------- Config ----------------
+const LIVE_URL = '/live';                    // served by receiver
+let   POLL_MS  = 1000;                       // can be changed via dropdown
+const CIRCLE_RADIUS_M = 1000;                // 1 km radius
+
+// Fixed 5 RMS levels (must match sender) and 5 distinct colors with names.
+const LEVELS = [100, 300, 500, 800, 1200];
+const COLORS5 = [
+  {name:'Red',    hex:'#e31a1c'},
+  {name:'Green',  hex:'#33a02c'},
+  {name:'Blue',   hex:'#1f78b4'},
+  {name:'Yellow', hex:'#ffcc00'},
+  {name:'Orange', hex:'#ff7f00'}
+];
+
+// Station order → offset mapping (first seen = 0, next = 1, etc.)
+const stationOrder = {};
+let stationSeq = 0;
+function getStationOffset(id) {
+  if (!(id in stationOrder)) stationOrder[id] = stationSeq++;
+  return stationOrder[id] % COLORS5.length;
+}
+
+// Map RMS value to the nearest level index 0..4
+function rmsLevelIndex(rms) {
+  let best = 0, bestDiff = Infinity;
+  for (let i=0;i<LEVELS.length;i++){
+    const d = Math.abs(rms - LEVELS[i]);
+    if (d < bestDiff) { best = i; bestDiff = d; }
+  }
+  return best;
+}
+
+// Compute color for station: level index + station-specific offset (wrap modulo 5)
+function colorForStationRMS(id, rms) {
+  const idx = rmsLevelIndex(rms);
+  const off = getStationOffset(id);
+  const colorIdx = (idx + off) % COLORS5.length;
+  return COLORS5[colorIdx];
+}
+
+const map = L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap'
+}).addTo(map);
+
+const markers = {}; // id -> {circle, marker, tip}
+let firstFit = false;
+
+function ensureMarker(s) {
+  if (markers[s.id]) return markers[s.id];
+  const color = colorForStationRMS(s.id, s.rms).hex;
+  const circle = L.circle([s.lat, s.lon], {
+    radius: CIRCLE_RADIUS_M,
+    color: '#222', weight: 2,
+    fillColor: color, fillOpacity: 0.6
+  }).addTo(map);
+  const m = L.circleMarker([s.lat, s.lon], {
+    radius: 4, color: '#000', fillColor: '#000', fillOpacity: 1, weight: 1
+  }).addTo(map);
+  const tip = L.tooltip({permanent:true, direction:'top', offset:[0,-6], className:'rmsTip'})
+              .setContent(`${s.id}<br/>RMS ${Number(s.rms||0).toFixed(1)}`);
+  m.bindTooltip(tip).openTooltip();
+  markers[s.id] = {circle, marker:m, tip};
+  return markers[s.id];
+}
+
+function addLegend() {
+  const box = L.control({position:'bottomleft'});
+  box.onAdd = () => {
+    const div = L.DomUtil.create('div', 'info legend');
+    div.id = 'legend';
+    let html = '<h4>RMS → Color (5 fixed)</h4>';
+    for (let i=0; i<COLORS5.length; i++) {
+      html += `<div class="row">
+        <span class="swatch" style="background:${COLORS5[i].hex}"></span>
+        <span>${COLORS5[i].name} &nbsp;→&nbsp; ~${LEVELS[i]}</span>
+      </div>`;
+    }
+    html += '<div style="margin-top:6px;font-size:12px;opacity:.8">Each station is offset by one color and cycles through the sequence over time.</div>';
+    div.innerHTML = html;
+    return div;
+  };
+  box.addTo(map);
+}
+addLegend();
+
+function updateStationBadges(stations) {
+  const root = document.getElementById('stations');
+  root.innerHTML = '';
+  for (const s of stations) {
+    const col = colorForStationRMS(s.id, s.rms);
+    const span = document.createElement('span');
+    span.className = 'badge';
+    span.style.borderColor = col.hex;
+    span.style.color = col.hex;
+    span.textContent = `${s.id}: RMS ${s.rms != null ? s.rms.toFixed(1) : '—'} (${col.name})`;
+    root.appendChild(span);
+  }
+}
+
+async function poll() {
+  try {
+    const res = await fetch(LIVE_URL, {cache:'no-store'});
+    if (!res.ok) return;
+    const payload = await res.json();
+    const stations = payload.stations || [];
+    document.getElementById('pollMs').textContent = POLL_MS;
+
+    if (!firstFit && stations.length) {
+      const latlngs = stations.map(s => [s.lat, s.lon]);
+      map.fitBounds(latlngs, {padding:[30,30]});
+      firstFit = true;
+    }
+
+    for (const s of stations) {
+      const entry = ensureMarker(s);
+      const col = colorForStationRMS(s.id, s.rms).hex;
+      entry.circle.setStyle({fillColor: col});
+      entry.tip.setContent(`${s.id}<br/>RMS ${Number(s.rms||0).toFixed(1)}`);
+    }
+    updateStationBadges(stations);
+  } catch (e) {
+    // ignore transient errors
+  }
+}
+
+let timer = null;
+function startPolling() {
+  if (timer) clearInterval(timer);
+  timer = setInterval(poll, POLL_MS);
+  poll();
+}
+
+document.getElementById('pollSelect').addEventListener('change', (e) => {
+  POLL_MS = parseInt(e.target.value, 10);
+  startPolling();
+});
+
+startPolling();
+</script>
+</body>
+</html>
