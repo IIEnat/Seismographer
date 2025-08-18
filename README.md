@@ -23,4 +23,4 @@ Then open: http://127.0.0.1:8081/
 
 ---
 
-That’s it — the app starts both sender and receiver, and shuts them down when you exit."
+That’s it — the app starts both sender and receiver, and shuts them down when you exit.
