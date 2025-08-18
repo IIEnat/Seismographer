@@ -1,17 +1,17 @@
-
 #!/usr/bin/env python3
 """
-seedlink_multi_receiver.py (strict per-second aggregation)
----------------------------------------------------------
-- Connects to multiple TCP MiniSEED sources.
-- Each record contains 250 samples for ONE second.
-- For each station, aggregates **within that exact second** only.
-- Metric is RMS by default; use --metric mean to switch to arithmetic mean.
-- No rolling windows, no averaging across seconds.
+seedlink_multi_receiver.py (strict per-second aggregation + /wave drilldown)
+
+- Connects to multiple TCP MiniSEED sources (1 record/second containing 250 samples).
+- For each station, aggregates **within that exact second only** (no rolling window).
+- Keeps BOTH:
+    * last finalized per-second aggregate (RMS or mean) for /live
+    * last finalized per-second raw samples + fs for /wave
 
 HTTP:
-  GET /            -> serve index_map.html
-  GET /live        -> latest finalized per-second values for each station
+  GET /            -> serves RMS_station_viewer.html
+  GET /live        -> latest finalized per-second values for each station (for the map)
+  GET /wave?id=NET.STA..CHA -> last finalized 1s { id, t0_iso, fs, values[], sec_key }
 """
 import argparse
 import json
@@ -19,12 +19,14 @@ import signal
 import socket
 import threading
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from io import BytesIO
 from typing import Dict, List, Tuple
+from urllib.parse import urlparse, parse_qs
+import os
 
 import numpy as np
 from obspy import read, UTCDateTime
@@ -67,31 +69,48 @@ class Aggregator:
     def __init__(self, metric: str = "rms"):
         self.metric = metric.lower()
         self.func = rms if self.metric == "rms" else mean
-        # per-station current second key -> samples buffer
+        # per-station "current" UTC second key & buffer
         self.cur_key: Dict[str, int] = {}
         self.buffers: Dict[str, list] = defaultdict(list)
-        self.last_value: Dict[str, Tuple[str, float]] = {}  # finalized (iso_second, value)
+        self.cur_fs: Dict[str, float] = {}  # fs seen for current second
+
+        # finalized values for the LAST completed second
+        self.last_value: Dict[str, Tuple[str, float]] = {}          # (iso_second, value)
+        self.last_wave: Dict[str, Tuple[str, float, List[float]]] = {}  # (iso_second, fs, values[])
         self.lock = threading.Lock()
 
     @staticmethod
     def second_key(t: UTCDateTime) -> int:
-        # integer UTC second
         return int(t.timestamp)
 
-    def add_block(self, sid: str, start: UTCDateTime, data: np.ndarray):
+    def _finalize(self, sid: str, key: int):
+        arr = np.asarray(self.buffers[sid], dtype=np.float64)
+        val = self.func(arr) if arr.size else 0.0
+        iso = datetime.utcfromtimestamp(key).replace(tzinfo=timezone.utc).isoformat()
+        fs = float(self.cur_fs.get(sid, 0.0))
+        # store aggregate and raw waveform for the last second
+        self.last_value[sid] = (iso, float(val))
+        self.last_wave[sid] = (iso, fs, arr.astype(np.float64, copy=False).tolist())
+        # reset buffer for next second
+        self.buffers[sid].clear()
+
+    def add_block(self, sid: str, start: UTCDateTime, data: np.ndarray, fs: float):
         key = self.second_key(start)
         with self.lock:
             old_key = self.cur_key.get(sid)
             if old_key is None:
                 self.cur_key[sid] = key
+                self.cur_fs[sid] = fs
             elif key != old_key:
                 # finalize previous second
-                arr = np.asarray(self.buffers[sid], dtype=np.float64)
-                val = self.func(arr) if arr.size else 0.0
-                self.last_value[sid] = (datetime.utcfromtimestamp(old_key).replace(tzinfo=timezone.utc).isoformat(), float(val))
-                # reset for new second
-                self.buffers[sid].clear()
+                self._finalize(sid, old_key)
+                # new second
                 self.cur_key[sid] = key
+                self.cur_fs[sid] = fs
+            else:
+                # same second; ensure fs is at least set
+                if sid not in self.cur_fs:
+                    self.cur_fs[sid] = fs
             # append current block's samples
             self.buffers[sid].extend(np.asarray(data, dtype=np.float64))
 
@@ -104,6 +123,10 @@ class Aggregator:
                     "id": sid, "lat": lat, "lon": lon, "rms": float(val), "last": iso
                 })
             return stations
+
+    def last_wave_packet(self, sid: str):
+        with self.lock:
+            return self.last_wave.get(sid)  # (iso, fs, values)
 
 
 class Receiver:
@@ -149,7 +172,8 @@ class Receiver:
                                 if data is None or len(data) == 0:
                                     continue
                                 start = tr.stats.starttime
-                                self.agg.add_block(sid, start, data)
+                                fs = float(tr.stats.sampling_rate or 0.0)
+                                self.agg.add_block(sid, start, data, fs)
             except Exception as e:
                 self.errors[sid] = str(e)
                 time.sleep(min(backoff, 5.0))
@@ -175,33 +199,79 @@ class Receiver:
             "stations": stations
         }
 
+    def wave_payload(self, sid: str):
+        pkt = self.agg.last_wave_packet(sid)
+        if not pkt:
+            return None
+        iso, fs, values = pkt
+        # sec_key used by UI to detect new seconds
+        sec_key = int(datetime.fromisoformat(iso).timestamp())
+        return {
+            "id": sid,
+            "t0_iso": iso,
+            "fs": fs,
+            "values": values,
+            "sec_key": sec_key
+        }
+
 
 class Handler(SimpleHTTPRequestHandler):
     receiver: 'Receiver' = None
+    here = os.path.dirname(os.path.abspath(__file__))
 
     def end_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         super().end_headers()
 
-    def do_GET(self):
-        if self.path == "/live":
-            body = json.dumps(self.receiver.snapshot()).encode("utf-8")
+    def _send_json(self, obj, code=200):
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_file(self, fname: str, ctype="text/html"):
+        try:
+            fpath = os.path.join(self.here, fname)
+            with open(fpath, "rb") as f:
+                data = f.read()
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store, max-age=0")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(body)
-            return
-        if self.path in ("/", "/index.html"):
-            return super().do_GET()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_error(404, f"Not found: {fname} ({e})")
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/live":
+            return self._send_json(self.receiver.snapshot())
+
+        if parsed.path == "/wave":
+            qs = parse_qs(parsed.query or "")
+            sid = (qs.get("id") or [None])[0]
+            if not sid:
+                return self._send_json({"error": "missing id"}, code=400)
+            payload = self.receiver.wave_payload(sid)
+            if not payload:
+                return self._send_json({"error": "no data yet for id"}, code=404)
+            return self._send_json(payload)
+
+        # Serve your RMS_station_viewer.html by default
+        if parsed.path in ("/", "/index.html", "/RMS_station_viewer.html"):
+            return self._send_file("RMS_station_viewer.html", "text/html")
+
+        # fall back to normal static handler
         return super().do_GET()
 
 
 def run_http(receiver: Receiver, http_port: int):
     httpd = ThreadingHTTPServer(("0.0.0.0", http_port), Handler)
     Handler.receiver = receiver
-    print(f"[receiver] HTTP on http://127.0.0.1:{http_port}/  (open index_map.html)")
+    print(f"[receiver] HTTP on http://127.0.0.1:{http_port}/  (opens RMS_station_viewer.html)")
     try:
         httpd.serve_forever()
     finally:
@@ -209,7 +279,7 @@ def run_http(receiver: Receiver, http_port: int):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="MiniSEED multi-receiver with strict per-second aggregation")
+    ap = argparse.ArgumentParser(description="MiniSEED multi-receiver with strict per-second aggregation + /wave")
     ap.add_argument("--reclen", type=int, default=4096)
     ap.add_argument("--http-port", type=int, default=8081)
     ap.add_argument("--metric", choices=["rms", "mean"], default="rms", help="aggregate within a second (default: rms)")
