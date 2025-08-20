@@ -199,15 +199,77 @@ function StationPulse({
 }
 
 /* ---------- Settings panel ---------- */
-type TabKeyUI = 'Live View' | 'Station View' | 'Placeholder'
+type TabKeyUI = 'Live View' | 'Station View' | 'Playback'
 function SettingsPanel() {
   const [tab, setTab] = useState<TabKeyUI>('Live View')
   const stations = useMemo(() => Array.from({ length: 28 }, (_, i) => `WAR${i + 1}`), [])
 
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [waveform, setWaveform] = useState<number[]>([]);
+  const [duration, setDuration] = useState<number>(0);
+  const [playbackTime, setPlaybackTime] = useState<number>(0);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // File upload: send to Python backend for parsing
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0];
+      setUploadedFile(file);
+      // Send file to backend
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch('http://localhost:8000/parse-miniseed', {
+          method: 'POST',
+          body: formData
+        });
+        if (!res.ok) throw new Error('Backend error');
+        const data = await res.json();
+        setWaveform(data.samples || []);
+        setDuration(data.duration || 0);
+      } catch (err) {
+        console.error('Backend parse error:', err);
+        setWaveform([]);
+        setDuration(0);
+      }
+    }
+  };
+
+  // Playback logic (simulate audio)
+  useEffect(() => {
+    let raf: number;
+    if (isPlaying && waveform.length > 0) {
+      const start = performance.now() - playbackTime * 1000;
+      const tick = () => {
+        const elapsed = (performance.now() - start) / 1000;
+        if (elapsed < duration) {
+          setPlaybackTime(elapsed);
+          raf = requestAnimationFrame(tick);
+        } else {
+          setPlaybackTime(duration);
+          setIsPlaying(false);
+        }
+      };
+      raf = requestAnimationFrame(tick);
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [isPlaying, waveform, duration]);
+
+  const handlePlay = () => {
+    setIsPlaying(true);
+  };
+  const handlePause = () => {
+    setIsPlaying(false);
+  };
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setPlaybackTime(Number(e.target.value));
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: 12, gap: 12 }}>
       <div style={{ display: 'flex', gap: 8 }}>
-        {(['Live View', 'Station View', 'Placeholder'] as TabKeyUI[]).map(k => (
+        {(['Live View', 'Station View', 'Playback'] as TabKeyUI[]).map(k => (
           <button
             key={k}
             onClick={() => setTab(k)}
@@ -246,7 +308,61 @@ function SettingsPanel() {
           </div>
         )}
         {tab === 'Station View' && <div style={{ color: '#6b7280' }}>Station View settings placeholder.</div>}
-        {tab === 'Placeholder' && <div style={{ color: '#6b7280' }}>Placeholder.</div>}
+        {tab === 'Playback' && (
+          <div style={{ color: '#6b7280', display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span>Upload MiniSEED file</span>
+              <input type="file" accept=".mseed,.miniseed" onChange={handleFileChange} />
+            </label>
+            {uploadedFile && (
+              <div style={{ color: '#333', fontSize: 14 }}>
+                Selected file: {uploadedFile.name}
+              </div>
+            )}
+            {waveform.length > 0 && (
+              <>
+                <div style={{ width: '100%', height: 120, background: '#fff', border: '1px solid #d1d5db', borderRadius: 8, overflow: 'hidden', position: 'relative' }}>
+                  <canvas
+                    width={400}
+                    height={100}
+                    style={{ width: '100%', height: '100%' }}
+                    ref={el => {
+                      if (!el) return;
+                      const ctx = el.getContext('2d');
+                      if (!ctx) return;
+                      ctx.clearRect(0, 0, el.width, el.height);
+                      ctx.strokeStyle = '#007bff';
+                      ctx.beginPath();
+                      const len = waveform.length;
+                      for (let i = 0; i < el.width; i++) {
+                        const idx = Math.floor(i / el.width * len);
+                        const y = (waveform[idx] ?? 0);
+                        const normY = 50 - y / 100; // scale for demo
+                        if (i === 0) ctx.moveTo(i, normY);
+                        else ctx.lineTo(i, normY);
+                      }
+                      ctx.stroke();
+                      // Playback position
+                      ctx.strokeStyle = '#ff0000';
+                      ctx.beginPath();
+                      const px = Math.floor(playbackTime / duration * el.width);
+                      ctx.moveTo(px, 0);
+                      ctx.lineTo(px, el.height);
+                      ctx.stroke();
+                    }}
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button onClick={handlePlay} disabled={isPlaying} style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #d1d5db' }}>Play</button>
+                  <button onClick={handlePause} disabled={!isPlaying} style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #d1d5db' }}>Pause</button>
+                  <input type="range" min={0} max={duration} step={0.01} value={playbackTime} onChange={handleSeek} style={{ flex: 1 }} />
+                  <span>{playbackTime.toFixed(2)} / {duration.toFixed(2)} s</span>
+                </div>
+              </>
+            )}
+            {waveform.length === 0 && <div>Playback and visualization coming soon.</div>}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -330,7 +446,7 @@ export default function App() {
           >
             Fetch Python (For testing)
           </button>
-          <button style={{ flex: 1, padding: '12px 0', borderRadius: 10, border: '1px solid #d1d5db' }}>Placeholder</button>
+          <button style={{ flex: 1, padding: '12px 0', borderRadius: 10, border: '1px solid #d1d5db' }}>Playback</button>
         </div>
       </div>
     </div>
