@@ -1,0 +1,27 @@
+<script>
+const ctx = document.getElementById("chart").getContext("2d");
+let chart = new Chart(ctx, {
+  type: "line",
+  data: { labels: [], datasets: [{ label: "Amplitude", data: [], borderColor: "blue", fill: false }] },
+  options: { animation: false }
+});
+
+async function updateChart() {
+  const res = await fetch("/data");
+  const newData = await res.json();
+
+  if (newData.length) {
+    chart.data.labels.push(new Date(newData[0].time*1000).toLocaleTimeString());
+    chart.data.datasets[0].data.push(newData[0].amp);
+
+    if (chart.data.labels.length > 50) { // keep last 50 points
+      chart.data.labels.shift();
+      chart.data.datasets[0].data.shift();
+    }
+    chart.update();
+  }
+  setTimeout(updateChart, 100); // 10 updates/sec
+}
+
+updateChart();
+</script>

@@ -1,0 +1,24 @@
+{
+  "name": "seismographer",
+  "version": "1.0.0",
+  "description": "For CITS3200 Professional Computing",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IIEnat/Seismographer.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/IIEnat/Seismographer/issues"
+  },
+  "homepage": "https://github.com/IIEnat/Seismographer#readme",
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
