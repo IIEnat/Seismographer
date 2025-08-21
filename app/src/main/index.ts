@@ -1,28 +1,69 @@
+// Launches everything here and handles the main process logic
+// This is the main entry point for the Electron app
+
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { spawn } from 'child_process'
+import { spawn, ChildProcess } from 'child_process'
 import path from 'path'
+import fs from 'fs'
+import { startReceiverBridge, stopReceiverBridge } from './receiver-bridge'
 
 /* ------------ Python helpers ------------ */
-function pyCmdAndArgs(scriptAbs: string): { cmd: string; args: string[] } {
+function pyCmdAndArgs(scriptAbs: string, extraArgs: string[] = []): { cmd: string; args: string[] } {
   if (process.platform === 'win32') {
-    // Use Windows launcher if present; falls back to python in PATH
-    return require('fs').existsSync('C:\\Windows\\py.exe')
-      ? { cmd: 'py', args: ['-3', scriptAbs] }
-      : { cmd: 'python', args: [scriptAbs] }
+    return fs.existsSync('C:\\Windows\\py.exe')
+      ? { cmd: 'py', args: ['-3', scriptAbs, ...extraArgs] }
+      : { cmd: 'python', args: [scriptAbs, ...extraArgs] }
   }
-  return { cmd: 'python3', args: [scriptAbs] }
+  return { cmd: 'python3', args: [scriptAbs, ...extraArgs] }
 }
 
-function pyScriptPath(): string {
+function receiverScriptPath(): string {
+  // Keep Python out of src/. Use resources/python for both dev & prod.
   if (!app.isPackaged) {
-    // Dev: point to project source (Windows path, not /mnt/…)
-    return path.resolve(app.getAppPath(), 'src', 'main', 'backend.py')
+    return path.resolve(app.getAppPath(), 'resources', 'python', 'seedlink_multi_receiver.py')
   }
-  // Prod: place via electron-builder extraResources -> backend/backend.py
-  return path.join(process.resourcesPath, 'backend', 'backend.py')
+  return path.join(process.resourcesPath, 'python', 'seedlink_multi_receiver.py')
+}
+
+/* ------------ Start/stop persistent receiver ------------ */
+let rxProc: ChildProcess | null = null
+
+function startReceiver(): void {
+  const script = receiverScriptPath()
+  const args = [
+    '--http-port', process.env.HTTP_PORT ?? '8081',
+    '--reclen', '4096',
+    '--metric', 'rms',
+    '--source', '127.0.0.1:18001@XX.JINJ1..BHZ@-31.3447,115.8923',
+    '--source', '127.0.0.1:18002@XX.JINJ2..BHZ@-31.3752,115.9231',
+    '--source', '127.0.0.1:18003@XX.JINJ3..BHZ@-31.3433,115.9667'
+  ]
+
+  const { cmd, args: fullArgs } = pyCmdAndArgs(script, args)
+  const cwd = path.dirname(script)
+
+  console.log('[RX] spawn:', cmd, fullArgs.join(' '), 'cwd=', cwd)
+  rxProc = spawn(cmd, fullArgs, {
+    cwd,
+    shell: process.platform === 'win32',
+    windowsHide: true
+  })
+
+  rxProc.stdout?.on('data', d => console.log('[RX]', d.toString().trim()))
+  rxProc.stderr?.on('data', d => console.error('[RX!]', d.toString().trim()))
+  rxProc.on('exit', code => {
+    console.log('[RX] exited with code', code)
+    rxProc = null
+  })
+}
+
+function stopReceiver(): void {
+  if (!rxProc) return
+  try { rxProc.kill() } catch { /* ignore */ }
+  rxProc = null
 }
 
 /* ------------ Window ------------ */
@@ -80,9 +121,16 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // Run Python and return stdout as string
+  // Start Python receiver once at app start
+  startReceiver()
+
+  // One-off Python script runner (kept from your code)
   ipcMain.handle('get-data', async () => new Promise((resolve, reject) => {
-    const script = pyScriptPath()
+    // If you still have a separate backend.py, keep your existing logic here.
+    const script = (!app.isPackaged)
+      ? path.resolve(app.getAppPath(), 'src', 'main', 'backend.py')
+      : path.join(process.resourcesPath, 'backend', 'backend.py')
+
     const { cmd, args } = pyCmdAndArgs(script)
 
     console.log('[PY] spawn:', cmd, args.join(' '), 'cwd=', app.getAppPath())
@@ -118,10 +166,14 @@ app.whenReady().then(() => {
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  const win = BrowserWindow.getAllWindows()[0]  // or the instance you just created
+  startReceiverBridge(win)  
 })
 
+app.on('before-quit', () => {
+  stopReceiverBridge()
+})
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  stopReceiverBridge()
 })

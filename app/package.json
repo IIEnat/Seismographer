@@ -51,7 +51,7 @@
   },
   "build": {
     "extraResources": [
-      { "from": "src/main/backend.py", "to": "backend/backend.py" }
+      { "from": "resources/python", "to": "python" }
     ]
   }
 }
