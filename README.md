@@ -9,10 +9,9 @@ Seismographer is an interactive tool that visualizes real-time seismic activity 
 🔍 Customisable Views: Filter by station or time window.  
 
 ## Technologies Used
-An app built with Electron-Vite and Python. Additionally:
-- Frontend: Vite, React, Leaflet.js
-- Data Processing: ObsPy
-- Data Sources: SeedLink protocol, MiniSEED files
+A website built using Flask and typical webdev technologies
+    - Obspy, numpy, seedlink for data aggregation in Python
+    - HTML, CSS, JS for frontend
 
 ## 👥 Project Team
 
@@ -26,57 +25,27 @@ An app built with Electron-Vite and Python. Additionally:
 | Kathleen     | 24091081       | kathisabella      |
 
 ## Project Setup
-
-### Install
-
-```bash
-$ npm install
+Install dependencies 
+*Note that requirements.txt needs to be updated
+```
+pip install -U flask obspy numpy
 ```
 
-### Development
-
-```bash
-$ npm run dev
+Change directory to /main/ and run using
 ```
-
-### Build
-
-```bash
-# For windows
-$ npm run build:win
-
-# For macOS
-$ npm run build:mac
-
-# For Linux
-$ npm run build:linux
+flask run
 ```
 
 ## Project Structure
 ```
-app/
-├── electron.vite.config.ts
-├── package.json
-├── tsconfig.json
-├── src/
-│   ├── main/                      # Electron Main process
-│   │   ├── index.ts               # boots Electron, spawns Python receiver, IPC handlers
-│   │   └── types.d.ts             # (optional) type defs if needed
-│   │
-│   ├── preload/                   # Preload bridge (contextIsolation-safe API)
-│   │   └── index.ts               # exposes window.api.getData(), .getStations(), etc
-│   │
-│   └── renderer/                  # React (Vite) frontend
-│       ├── App.tsx                # Your map app (uses window.api.*)
-│       ├── index.html
-│       ├── main.tsx               # React entrypoint
-│       └── components/            # (optional split if UI grows)
-│
-├── python/
-│   ├── seedlink_sender.py         # fake SeedLink server (simulates Centaur)
-│   ├── seedlink_multi_receiver.py # bridge receiver → JSON (/live, /wave)
-│   └── requirements.txt           # (if you want to pin obspy, flask, etc)
-│
-├── dist/                          # built renderer output (from Vite)
-└── out/                           # electron-builder output (packaged app)
+.
+├─ app.py                         # Flask app; toggles dev vs real ingest
+├─ python/
+│  ├─ ingest.py                   # SyntheticIngest (dev) + SeedLinkIngest (real)
+│  └─ receiver.py                 # Aggregator + Flask blueprint (/live, /wave, /debug/waves)
+├─ templates/
+│  └─ home.html                   # UI (map + waveform)
+└─ static/
+   └─ css/
+      └─ global.css               # styles
 ```
