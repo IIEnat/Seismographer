@@ -1,0 +1,277 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Realtime Seismic Map + Waveform</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/global.css') }}" />
+</head>
+<body>
+  <header>
+    <h1>Realtime Seismic Map</h1>
+    <span class="sep">|</span>
+    <div class="chip">Polling: <span id="pollMs">1000</span> ms</div>
+    <label>Interval:
+      <select id="pollSelect">
+        <option value="250">250 ms</option>
+        <option value="500">500 ms</option>
+        <option value="1000" selected>1000 ms</option>
+        <option value="2000">2000 ms</option>
+        <option value="5000">5000 ms</option>
+      </select>
+    </label>
+    <span class="sep">|</span>
+    <label><input type="checkbox" id="toggleOverlays" checked /> Show overlays</label>
+    <span class="sep">|</span>
+    <div class="chip chip--muted">APIs: <code>/live</code> · <code>/wave</code></div>
+    <div class="chip chip--muted">Click a station to load waveform</div>
+  </header>
+
+  <div id="wrap">
+    <div id="mapWrap" class="container-main">
+      <div id="map"></div>
+      <div id="badges" class="overlay dark"></div>
+      <div id="legend" class="overlay dark"></div>
+    </div>
+    <div id="waveWrap" class="container-section">
+      <div id="wave"></div>
+    </div>
+  </div>
+
+<script>
+/* ---------------- Config ---------------- */
+const LIVE_URL = `/live`;
+const WAVE_URL = `/wave`;
+let   POLL_MS  = 1000;
+const CIRCLE_RADIUS_M = 1000;
+
+/* ---------------- Legend colors ---------------- */
+const LEVELS = [100, 300, 500, 800, 1200];
+const COLORS5 = [
+  {name:'Red',    hex:'#e31a1c'},
+  {name:'Green',  hex:'#33a02c'},
+  {name:'Blue',   hex:'#1f78b4'},
+  {name:'Yellow', hex:'#ffcc00'},
+  {name:'Orange', hex:'#ff7f00'}
+];
+
+/* ---------------- Helpers ---------------- */
+const stationOrder = {}; let stationSeq = 0;
+const isNum = (v) => Number.isFinite(v) && !Number.isNaN(v);
+function getStationOffset(id){ if(!(id in stationOrder)) stationOrder[id]=stationSeq++; return stationOrder[id]%COLORS5.length; }
+function rmsLevelIndex(rms){ let b=0,d=Infinity; for(let i=0;i<LEVELS.length;i++){const di=Math.abs((rms||0)-LEVELS[i]); if(di<d){b=i; d=di}} return b; }
+function colorForStationRMS(id,rms){ const idx=rmsLevelIndex(rms); const off=getStationOffset(id); return COLORS5[(idx+off)%COLORS5.length]; }
+
+/* meters -> lat/lon offset */
+function offsetLatLng(lat, lon, dx_m, dy_m){
+  const R = 6378137; // m
+  const dLat = (dy_m / R) * 180 / Math.PI;
+  const dLon = (dx_m / (R * Math.cos(lat * Math.PI / 180))) * 180 / Math.PI;
+  return [lat + dLat, lon + dLon];
+}
+
+/* compute de-overlap positions for stations sharing same lat/lon */
+function computeRenderPositions(stations){
+  const key = (s)=> `${s.lat.toFixed(6)},${s.lon.toFixed(6)}`;
+  const groups = new Map();
+  stations.forEach(s=>{
+    const k = key(s);
+    if(!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(s.id);
+  });
+  const renderPos = new Map();
+  for (const [k, ids] of groups.entries()){
+    const [lat, lon] = k.split(',').map(Number);
+    const n = ids.length;
+    if (n === 1){
+      renderPos.set(ids[0], [lat, lon]);
+      continue;
+    }
+    const Rm = 140; // ring radius in meters for separation
+    for (let i=0;i<n;i++){
+      const ang = (2*Math.PI*i)/n;
+      const dx = Rm * Math.cos(ang);
+      const dy = Rm * Math.sin(ang);
+      renderPos.set(ids[i], offsetLatLng(lat, lon, dx, dy));
+    }
+  }
+  return renderPos;
+}
+
+/* ---------------- Map ---------------- */
+const map = L.map('map', { preferCanvas: true });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap'}).addTo(map);
+map.setView([0,0], 2);
+requestAnimationFrame(()=>map.invalidateSize());
+window.addEventListener('resize', ()=>map.invalidateSize());
+
+const stationLayer = L.layerGroup().addTo(map);
+const markers = {}; // id -> {group,circle,marker,tip}
+let firstFit = false;
+
+function ensureMarker(s, lat, lon){
+  if (markers[s.id]) return markers[s.id];
+  const color = colorForStationRMS(s.id, s.rms).hex;
+
+  const circle = L.circle([lat, lon], {
+    radius: CIRCLE_RADIUS_M,
+    color:'#222',
+    weight:2,
+    fillColor: color,
+    fillOpacity:0.6
+  });
+
+  const m = L.circleMarker([lat, lon], {
+    radius:6, color:'#000', fillColor:'#000', fillOpacity:1, weight:1
+  });
+
+  const tip = L.tooltip({permanent:true, direction:'top', offset:[0,-8], className:'rmsTip'})
+               .setContent(`${s.id}<br/>RMS ${Number(s.rms||0).toFixed(1)}`);
+  m.bindTooltip(tip).openTooltip();
+
+  const group = L.layerGroup([circle, m]).addTo(stationLayer);
+  const onClick = () => loadWaveform(s.id);
+  circle.on('click', onClick); m.on('click', onClick);
+
+  return (markers[s.id] = {group, circle, marker:m, tip});
+}
+
+function upsertMarker(s, lat, lon){
+  const entry = markers[s.id] || ensureMarker(s, lat, lon);
+  const ll = L.latLng(lat, lon);
+  entry.circle.setLatLng(ll);
+  entry.marker.setLatLng(ll);
+  entry.circle.setStyle({ fillColor: colorForStationRMS(s.id, s.rms).hex });
+  entry.tip.setContent(`${s.id}<br/>RMS ${Number(s.rms||0).toFixed(1)}`);
+}
+
+/* ---------------- Overlays ---------------- */
+(function renderLegend(){
+  const box = document.getElementById('legend');
+  let html = '<h4>RMS → Color (fixed ×5)</h4>';
+  for (let i=0;i<COLORS5.length;i++){
+    html += `<div class="row"><span class="sw" style="background:${COLORS5[i].hex}"></span><span>${COLORS5[i].name} → ~${LEVELS[i]}</span></div>`;
+  }
+  html += '<div class="note">Each station is offset by one color and cycles. Coincident stations are auto-separated.</div>';
+  box.innerHTML = html;
+})();
+
+function updateBadges(stations){
+  const root = document.getElementById('badges'); root.innerHTML = '';
+  for (const s of stations){
+    const col = colorForStationRMS(s.id, s.rms);
+    const span = document.createElement('span');
+    span.className = 'badge';
+    span.style.borderColor = col.hex;
+    span.style.color = col.hex;
+    span.textContent = `${s.id}: RMS ${s.rms != null ? s.rms.toFixed(1) : '—'} (${col.name})`;
+    span.onclick = () => loadWaveform(s.id);
+    root.appendChild(span);
+  }
+}
+
+document.getElementById('toggleOverlays').addEventListener('change', (e) => {
+  const on = e.target.checked;
+  document.getElementById('legend').style.display = on ? '' : 'none';
+  document.getElementById('badges').style.display = on ? '' : 'none';
+});
+
+/* ---------------- Poll /live ---------------- */
+async function poll(){
+  try {
+    const res = await fetch(LIVE_URL, {cache:'no-store'});
+    if (!res.ok) return;
+    const payload = await res.json();
+
+    let stations = Array.isArray(payload.stations) ? payload.stations : [];
+    stations = stations.map(s => ({...s, lat:Number(s.lat), lon:Number(s.lon)}))
+                       .filter(s => isNum(s.lat) && isNum(s.lon));
+
+    const renderPos = computeRenderPositions(stations);
+
+    for (const s of stations){
+      const pos = renderPos.get(s.id) || [s.lat, s.lon];
+      upsertMarker(s, pos[0], pos[1]);
+    }
+
+    // remove stale
+    const seen = new Set(stations.map(s => s.id));
+    Object.keys(markers).forEach(id => {
+      if (!seen.has(id)) {
+        stationLayer.removeLayer(markers[id].group);
+        delete markers[id];
+      }
+    });
+
+    if (!firstFit && stations.length){
+      const bounds = L.latLngBounds(stations.map(s => renderPos.get(s.id) || [s.lat, s.lon]));
+      if (bounds.isValid()) map.fitBounds(bounds, {padding:[30,30], maxZoom: 12});
+      firstFit = true;
+      loadWaveform(stations[0].id);
+    }
+
+    document.getElementById('pollMs').textContent = POLL_MS;
+    updateBadges(stations);
+  } catch {}
+}
+
+let pollTimer=null;
+function startPolling(){ if (pollTimer) clearInterval(pollTimer); pollTimer = setInterval(poll, POLL_MS); poll(); }
+document.getElementById('pollSelect').addEventListener('change', (e)=>{ POLL_MS = parseInt(e.target.value,10); startPolling(); });
+
+/* ---------------- Waveform (/wave) ---------------- */
+let openId=null, lastSecKey=null, wavePollBackoff=1000;
+
+async function loadWaveform(id){
+  openId = id; lastSecKey = null; wavePollBackoff = 1000;
+  await drawWave(true);
+}
+
+async function drawWave(force=false){
+  if (!openId) return;
+  try {
+    const res = await fetch(`${WAVE_URL}?id=${encodeURIComponent(openId)}`, {cache:'no-store'});
+    if (res.status === 404) {
+      setTimeout(()=>drawWave(false), Math.min(wavePollBackoff*=1.5, 5000));
+      return;
+    }
+    if (!res.ok) return;
+
+    const data = await res.json();
+    if (!force && lastSecKey === data.sec_key) return;
+    lastSecKey = data.sec_key;
+
+    const fs = data.fs || 0;
+    const values = Array.isArray(data.values) ? data.values : [];
+    const dt = fs > 0 ? (1.0/fs) : 0.004;
+    const t0 = new Date(data.t0_iso);
+    const xs = new Array(values.length);
+    for (let i=0;i<values.length;i++) xs[i] = new Date(t0.getTime() + i*dt*1000);
+
+    Plotly.react('wave',
+      [{ x: xs, y: values, type:'scatter', mode:'lines', name: openId }],
+      {
+        paper_bgcolor:'#111', plot_bgcolor:'#111', font:{color:'#eaeaea'},
+        margin:{l:50,r:10,t:10,b:40},
+        xaxis:{title:'time', rangeslider:{visible:false}, gridcolor:'#333'},
+        yaxis:{title:'amplitude', gridcolor:'#333'},
+        uirevision:'keep'
+      },
+      {responsive:true}
+    );
+
+    wavePollBackoff = 1000;
+  } catch {}
+}
+
+/* periodic check for new seconds once a waveform is open */
+setInterval(()=>drawWave(false), 1000);
+
+/* kick off */
+startPolling();
+</script>
+</body>
+</html>
