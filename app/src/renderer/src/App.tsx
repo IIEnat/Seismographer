@@ -205,7 +205,8 @@ function SettingsPanel() {
   const stations = useMemo(() => Array.from({ length: 28 }, (_, i) => `WAR${i + 1}`), [])
 
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [waveform, setWaveform] = useState<number[]>([]);
+  const [waveform,git rm app/src/renderer/src/App.tsx
+ setWaveform] = useState<number[]>([]);
   const [duration, setDuration] = useState<number>(0);
   const [playbackTime, setPlaybackTime] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
