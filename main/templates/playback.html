@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Seismographer Playback</title>
+    <link rel="stylesheet" href="/static/css/global.css">
+    <style>
+        .container { max-width: 800px; margin: auto; padding: 2em; }
+        #seismicMap { width: 100%; height: 400px; background: #eee; margin-bottom: 2em; }
+        .slider-container { display: flex; align-items: center; gap: 1em; }
+        .slider { width: 80%; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Playback Seismic Map</h1>
+            <span class="sep">|</span>
+            <div class="chip chip--muted">Batch upload .miniseed files and scrub through time</div>
+            <span class="sep">|</span>
+            <div class="chip chip--muted">Station RMS values shown on map</div>
+        </header>
+        <form id="uploadForm" enctype="multipart/form-data" method="POST" style="margin: 2em 0;">
+            <input type="file" name="seedlink_files" id="seedlink_files" accept=".mseed,.seed,.dat,.miniseed" multiple required>
+            <button type="submit">Upload & Play</button>
+        </form>
+        <div id="wrap">
+            <div id="mapWrap" class="container-main">
+                <div id="seismicMap"></div>
+                <div id="badges" class="overlay dark"></div>
+                <div id="legend" class="overlay dark"></div>
+            </div>
+            <div id="waveWrap" class="container-section">
+                <div id="wave"></div>
+            </div>
+        </div>
+        <div class="slider-container">
+            <label for="playbackSlider">Playback:</label>
+            <input type="range" id="playbackSlider" class="slider" min="0" max="100" value="0" disabled>
+            <span id="sliderValue">0</span>
+        </div>
+    </div>
+    <script>
+        let uploadedFilenames = [];
+
+        // Handle batch file upload via AJAX
+        const uploadForm = document.getElementById('uploadForm');
+        uploadForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const filesInput = document.getElementById('seedlink_files');
+            const formData = new FormData();
+            for (let i = 0; i < filesInput.files.length; i++) {
+                formData.append('seedlink_file', filesInput.files[i]);
+            }
+            fetch('/playback', {
+                method: 'POST',
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'uploaded') {
+                    // Support batch: backend should return array of filenames
+                    uploadedFilenames = Array.isArray(data.filenames) ? data.filenames : [data.filename];
+                    slider.disabled = false;
+                    fetchAndRenderMap(slider.value);
+                } else {
+                    alert('Upload failed');
+                }
+            })
+            .catch(() => alert('Upload error'));
+        });
+
+        // Fetch and update map for selected time
+        function fetchAndRenderMap(sliderValue) {
+            if (!uploadedFilenames.length) return;
+            const filesParam = uploadedFilenames.join(',');
+            fetch(`/playback_data/${filesParam}/${sliderValue}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.stations && data.stations.length > 0) {
+                        renderMap(data.stations);
+                    } else {
+                        // Show message if no stations returned
+                        document.getElementById('seismicMap').innerHTML = '<div style="color:#fff;text-align:center;padding:2em;">No station data available for this time.</div>';
+                    }
+                })
+                .catch(() => {
+                    document.getElementById('seismicMap').innerHTML = '<div style="color:#fff;text-align:center;padding:2em;">Error loading map data.</div>';
+                });
+        }
+
+        const slider = document.getElementById('playbackSlider');
+        const sliderValue = document.getElementById('sliderValue');
+        slider.addEventListener('input', function() {
+            sliderValue.textContent = slider.value;
+            fetchAndRenderMap(slider.value);
+        });
+
+        // Add Leaflet CSS/JS if not present
+        if (!document.querySelector('link[href*="leaflet"]')) {
+            const leafletCss = document.createElement('link');
+            leafletCss.rel = 'stylesheet';
+            leafletCss.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+            document.head.appendChild(leafletCss);
+        }
+        if (!window.L) {
+            const leafletJs = document.createElement('script');
+            leafletJs.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+            document.head.appendChild(leafletJs);
+        }
+
+        // Wait for Leaflet to load before rendering map
+        function ensureLeafletReady(cb) {
+            if (window.L && typeof window.L.map === 'function') {
+                cb();
+            } else {
+                setTimeout(() => ensureLeafletReady(cb), 100);
+            }
+        }
+
+        // Simple map rendering using Leaflet
+        let map = null;
+        function renderMap(stations) {
+            ensureLeafletReady(() => {
+                if (!map) {
+                    map = L.map('seismicMap', { preferCanvas: true }).setView([-31.35, 115.92], 10);
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        maxZoom: 18,
+                        attribution: '© OpenStreetMap'
+                    }).addTo(map);
+                }
+                // Remove existing markers
+                if (window.stationMarkers) {
+                    window.stationMarkers.forEach(m => map.removeLayer(m));
+                }
+                window.stationMarkers = [];
+                stations.forEach(st => {
+                    const color = getColorForIntensity(st.rms);
+                    const marker = L.circleMarker([st.lat, st.lon], {
+                        radius: 12,
+                        color: color,
+                        fillColor: color,
+                        fillOpacity: 0.7,
+                    }).addTo(map);
+                    marker.bindPopup(`<b>Station:</b> ${st.id}<br><b>RMS:</b> ${st.rms.toFixed(2)}`);
+                    window.stationMarkers.push(marker);
+                });
+                // Show station badges
+                const badges = document.getElementById('badges');
+                badges.innerHTML = stations.map(st =>
+                    `<div class="chip">${st.id}: <b>${st.rms.toFixed(2)}</b></div>`
+                ).join(' ');
+            });
+        }
+
+        function getColorForIntensity(rms) {
+            // Use home.html color scale
+            const LEVELS = [100, 300, 500, 800, 1200];
+            const COLORS5 = ['#e31a1c','#33a02c','#1f78b4','#ffcc00','#ff7f00'];
+            let idx = 0, d = Infinity;
+            for (let i = 0; i < LEVELS.length; i++) {
+                const di = Math.abs((rms||0) - LEVELS[i]);
+                if (di < d) { idx = i; d = di; }
+            }
+            return COLORS5[idx];
+        }
+    </script>
+</body>
+</html>
