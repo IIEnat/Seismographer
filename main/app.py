@@ -15,8 +15,14 @@ rx = SLClientReceiver(coords=COORDS, metric="rms")
 USE_REAL_SEEDLINK = False  
 
 if USE_REAL_SEEDLINK:
-    # For real SeedLink data, replace with actual server details
-    None
+    from python.ingest import SeedLinkIngest  # same module as SyntheticIngest
+
+    SL_SERVER = "seedlink.example.org:18000"  # TODO: set actual host:port
+    ingest = SeedLinkIngest(
+        server=SL_SERVER,
+        on_trace=rx.on_trace,  # keep the same callback into the receiver
+    )
+    ingest.start()
 else:
     # Use to create the Obspy traces in ingest.py
     ingest = SyntheticIngest(
