@@ -1,22 +1,14 @@
-from scapy.all import sniff
+import socket
 
-def file_write(keys):
-    with open("data.txt","a") as file:
-        for key in keys:
-            file.write(key)
+# Bind to port 18000 (or whichever your instrument sends to)
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # TCP example
+sock.bind(("0.0.0.0", 18000))
+sock.listen()
 
-def handle_packet(packet):
-    if packet.haslayer("IP"):
-        src = packet["IP"].src
-        dst = packet["IP"].dst
-        print(f"{src} -> {dst}, len={len(packet)}")
-        file_write(f"{src} -> {dst}, len={len(packet)}\n")
-        if packet.haslayer("UDP"):
-            print(f"   UDP {packet['UDP'].sport} -> {packet['UDP'].dport}")
-            file_write(f"   UDP {packet['UDP'].sport} -> {packet['UDP'].dport}\n")
-            data = bytes(packet["UDP"].payload)
-            print(f"   Payload: {data[:50]}...")  # show first 50 bytes
-            file_write(f"   Payload: {data}\n")
+print("Listening for connections on port 18000...")
 
-sniff(iface="en14", prn=handle_packet, store=False)  # Ethernet
-# sniff(iface="en0", prn=handle_packet, store=False)   # Wi-Fi
+while True:
+    conn, addr = sock.accept()
+    print("Connected by", addr)
+    data = conn.recv(1024)
+    print("Received:", data)
