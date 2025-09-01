@@ -1,13 +1,17 @@
-from flask import Flask, render_template
+from flask import Flask, render_template, request, jsonify
 from python.receiver import SLClientReceiver, create_blueprint
 from python.ingest import SyntheticIngest, Chan
 
-from flask import request, jsonify
-import os
 from werkzeug.utils import secure_filename
+import os
+import glob  # <-- needed
+import numpy as np  # <-- needed
+from obspy import read as obspy_read, Stream  # <-- needed
+
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+UPLOAD_DIR = app.config['UPLOAD_FOLDER']  # <-- define once and reuse
 
 # Placeholder Data, realistically this would be relpaced by real SeedLink data from the SOH
 COORDS = {
@@ -17,11 +21,10 @@ COORDS = {
 }
 rx = SLClientReceiver(coords=COORDS, metric="rms")
 
-USE_REAL_SEEDLINK = False  
-
+USE_REAL_SEEDLINK = False
 if USE_REAL_SEEDLINK:
     # For real SeedLink data, replace with actual server details
-    None
+    pass
 else:
     # Use to create the Obspy traces in ingest.py
     ingest = SyntheticIngest(
@@ -33,25 +36,55 @@ else:
         sps=250.0,
         on_trace=rx.on_trace,
     )
+    ingest.start()
 
-ingest.start()
 app.register_blueprint(create_blueprint(rx))
 
-
-# Home page
-@app.route("/")
-def home():
-    return render_template("home.html")
-
-# Playback page
-
-import glob
+# ------------------ Helpers for playback ------------------
 def clear_uploads_folder():
-    for f in glob.glob(os.path.join(app.config['UPLOAD_FOLDER'], '*')):
+    for f in glob.glob(os.path.join(UPLOAD_DIR, "*")):
         try:
             os.remove(f)
         except Exception:
             pass
+
+def _read_streams_for_files(filenames):
+    """Return merged ObsPy Stream for a list of filenames saved in UPLOAD_DIR."""
+    streams = []
+    for fname in filenames:
+        path = os.path.join(UPLOAD_DIR, fname)
+        if not os.path.exists(path):
+            continue
+        try:
+            st = obspy_read(path)
+            streams.append(st)
+        except Exception:
+            continue
+    merged = Stream()
+    for st in streams:
+        merged += st
+    return merged
+
+def _hardcoded_latlon_for_trace(tr):
+    """
+    Hard-code location when unknown. For now:
+    - If station contains 'WAR' and channel is Z/BHZ → fixed Gingin-ish point.
+    - Else try embedded coordinates if present; otherwise None.
+    """
+    if "WAR" in tr.stats.station and (str(tr.stats.channel).endswith("Z") or tr.stats.channel == "BHZ"):
+        return (-31.347, 115.895)
+    coords = getattr(tr.stats, "coordinates", {}) or {}
+    lat = coords.get("latitude")
+    lon = coords.get("longitude")
+    if lat is None or lon is None:
+        lat = getattr(tr.stats, "lat", None)
+        lon = getattr(tr.stats, "lon", None)
+    return (lat, lon)
+
+# ------------------ Routes ------------------
+@app.route("/")
+def home():
+    return render_template("home.html")
 
 @app.route("/playback", methods=["GET", "POST"])
 def playback():
@@ -59,74 +92,98 @@ def playback():
         clear_uploads_folder()
         files = request.files.getlist("seedlink_file")
         if not files:
-            return "No file uploaded", 400
+            return jsonify({"status": "error", "message": "No files uploaded"}), 400
         filenames = []
         for file in files:
+            if not file or not file.filename:
+                continue
             filename = secure_filename(file.filename)
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(filepath)
+            dest = os.path.join(UPLOAD_DIR, filename)
+            file.save(dest)
             filenames.append(filename)
+        if not filenames:
+            return jsonify({"status": "error", "message": "No valid filenames"}), 400
         return jsonify({"status": "uploaded", "filenames": filenames})
-    else:
-        clear_uploads_folder()
-        return render_template("playback.html")
+    # GET
+    return render_template("playback.html")
 
-# Endpoint for slider playback (stub)
-
-from obspy import read as obspy_read
-from python.receiver import SLClientReceiver
-
+@app.route("/playback_timeline/<filenames>")
+def playback_timeline(filenames):
+    file_list = [f for f in filenames.split(",") if f]
+    merged = _read_streams_for_files(file_list)
+    if len(merged) == 0:
+        return jsonify({"start_iso": None, "end_iso": None, "steps": 1})
+    start = min(tr.stats.starttime for tr in merged)
+    end   = max(tr.stats.endtime   for tr in merged)
+    window_size = 1  # seconds per slider step
+    steps = int((end - start) // window_size) + 1
+    return jsonify({
+        "start_iso": start.datetime.isoformat(),
+        "end_iso":   end.datetime.isoformat(),
+        "steps":     steps
+    })
 
 @app.route("/playback_data/<filenames>/<int:slider>")
 def playback_data(filenames, slider):
-    # Support multiple files (comma-separated)
-    file_list = filenames.split(',')
-    streams = []
-    for fname in file_list:
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], fname)
-        if not os.path.exists(filepath):
-            continue
-        try:
-            st = obspy_read(filepath)
-            streams.append(st)
-        except Exception as e:
-            continue
-
-    if not streams:
+    file_list = [f for f in filenames.split(",") if f]
+    merged = _read_streams_for_files(file_list)
+    if len(merged) == 0:
         return jsonify({"slider": slider, "stations": []})
 
-    # Merge all streams
-    from obspy import Stream
-    merged_stream = Stream()
-    for st in streams:
-        merged_stream += st
+    window_size = 1
+    t0 = min(tr.stats.starttime for tr in merged)
+    t_start = t0 + slider * window_size
+    t_end   = t_start + window_size
 
-    # Use static COORDS for demo, but ideally extract from traces
-    COORDS = {
-        "XX.JINJ1..BHN": (-31.3447,115.8923),
-        "XX.JINJ1..BHE": (-31.3752,115.9231),
-        "XX.JINJ1..BHZ": (-31.3433,115.9667),
-    }
-    rx = SLClientReceiver(coords=COORDS, metric="rms")
+    z_traces = [tr for tr in merged if str(tr.stats.channel).endswith("Z")]
+    stations = []
+    for tr in z_traces:
+        sliced = tr.slice(starttime=t_start, endtime=t_end)
+        data = np.asarray(sliced.data, dtype=np.float64)
+        rms = float(np.sqrt(np.mean(data**2))) if data.size else 0.0
 
-    # Simulate slider as time window (e.g., seconds)
-    window_size = 1  # seconds per slider step
-    # Find earliest starttime
-    if len(merged_stream) == 0:
-        return jsonify({"slider": slider, "stations": []})
-    t_start = min(tr.stats.starttime for tr in merged_stream) + slider * window_size
-    t_end = t_start + window_size
-    traces_in_window = merged_stream.slice(starttime=t_start, endtime=t_end)
+        station_id = f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}.{tr.stats.channel}"
+        lat, lon = _hardcoded_latlon_for_trace(tr)
 
-    # Feed traces to receiver
-    for tr in traces_in_window:
-        rx.on_trace(tr)
-
-    stations = rx.agg.snapshot(COORDS)
-    for s in stations:
-        s["intensity"] = s["rms"]
-
+        stations.append({
+            "id": station_id,
+            "lat": lat,
+            "lon": lon,
+            "rms": rms
+        })
     return jsonify({"slider": slider, "stations": stations})
 
+@app.route("/playback_wave/<filenames>/<int:slider>/<path:station_id>")
+def playback_wave(filenames, slider, station_id):
+    file_list = [f for f in filenames.split(",") if f]
+    merged = _read_streams_for_files(file_list)
+    if len(merged) == 0:
+        return jsonify({"fs": 0, "values": [], "t0_iso": None})
+
+    window_size = 1
+    t0 = min(tr.stats.starttime for tr in merged)
+    t_start = t0 + slider * window_size
+    t_end   = t_start + window_size
+
+    target = None
+    for tr in merged:
+        sid = f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}.{tr.stats.channel}"
+        if sid == station_id:
+            target = tr
+            break
+
+    if target is None:
+        return jsonify({"fs": 0, "values": [], "t0_iso": None})
+
+    sliced = target.slice(starttime=t_start, endtime=t_end)
+    data = np.asarray(sliced.data, dtype=np.float64)
+    fs = float(getattr(target.stats, "sampling_rate", 0.0))
+    return jsonify({
+        "fs": fs,
+        "values": data.tolist(),
+        "t0_iso": t_start.datetime.isoformat()
+    })
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Run: python app.py
+    app.run(host="0.0.0.0", port=8000, debug=True)
