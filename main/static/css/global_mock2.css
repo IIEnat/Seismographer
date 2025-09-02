@@ -1,0 +1,38 @@
+@import url("./global.css"); /* Base styles from main */
+
+/* ===== Scale strip above graphs (UI only) ===== */
+.scale-strip{
+  display:flex; align-items:center; gap:10px;
+  margin: 0 0 8px 0;
+}
+.scale-strip .lbl{ font-size:12px; opacity:.8; }
+.scale-strip .scale-slider{
+  width: 180px; height: 4px;
+  appearance:none; background:#333; border-radius:999px; outline:none;
+}
+.scale-strip .scale-slider::-webkit-slider-thumb{
+  appearance:none; width:16px; height:16px; border-radius:50%;
+  background:#2563eb; border:2px solid #1f4fd1; cursor:pointer;
+}
+.scale-strip .scale-slider::-moz-range-thumb{
+  width:16px; height:16px; border-radius:50%;
+  background:#2563eb; border:2px solid #1f4fd1; cursor:pointer;
+}
+.scale-strip .ticks{
+  display:flex; gap:16px; margin-left:4px;
+  font-size:11px; opacity:.7;
+}
+
+/* ===== Modal ===== */
+.modal { display:none; position:fixed; z-index:10020; inset:0; background:rgba(0,0,0,0.8); }
+.modal-content { background:#1a1a1a; margin:4% auto; padding:20px; border-radius:12px; width:90%; max-width:1200px; }
+.modal-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.modal-title { font-weight:700; }
+.modal-close { font-size:26px; cursor:pointer; line-height:1; padding:2px 8px; border:1px solid #333; border-radius:8px; }
+
+/* Main graph box */
+.graphBox { background:#111; border:1px solid #333; border-radius:8px; height:260px; }
+
+/* Keep bottom band tidy */
+#waveWrap { padding: 8px; }
+#wave { cursor: pointer; height: 100%; }

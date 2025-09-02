@@ -1,0 +1,85 @@
+@import url("./global.css"); /* Base styles from main */
+
+/* --- Wave area layout overrides for Mock-up 1 --- */
+#waveWrap {
+  /* lock the bottom band height and prevent inner scroll */
+  flex: 0 0 40vh !important;
+  height: 40vh !important;
+  min-height: 0 !important;
+  padding: 8px;
+  overflow: hidden; /* no scrollbars */
+}
+
+/* one row that fills the whole band */
+.graphsRow {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  min-height: 0; /* allow children to shrink */
+}
+
+/* left: Z column (60%) */
+#zCol {
+  flex: 0 0 60%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* right: X+Y column (40%), stacked vertically */
+#xyCol {
+  flex: 0 0 40%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0; /* critical to avoid overflow */
+}
+
+/* plot containers: stretch to fill; no min-heights that cause overflow */
+.graphBox {
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 8px;
+  flex: 1 1 0;
+  min-height: 0;   /* allow flex child to shrink */
+  height: 100%;
+}
+
+/* override base rule that gave #wave a min-height */
+#wave {
+  min-height: 0 !important;
+  height: 100% !important;
+}
+
+/* X/Y: let flex sizing control the height (each ~50% of right column) */
+#waveX, #waveY {
+  min-height: 0 !important;
+  height: 100% !important;
+}
+
+
+/* ===== Scale strip above graphs (left-aligned) ===== */
+.scale-strip{
+  display:flex; align-items:center; gap:10px;
+  margin: 0 0 8px 0;  /* small gap before graphs */
+}
+.scale-strip .lbl{ font-size:12px; opacity:.8; }
+
+.scale-strip .scale-slider{
+  width: 180px; height: 4px;
+  appearance:none; background:#333; border-radius:999px; outline:none;
+}
+.scale-strip .scale-slider::-webkit-slider-thumb{
+  appearance:none; width:16px; height:16px; border-radius:50%;
+  background:#2563eb; border:2px solid #1f4fd1; cursor:pointer;
+}
+.scale-strip .scale-slider::-moz-range-thumb{
+  width:16px; height:16px; border-radius:50%;
+  background:#2563eb; border:2px solid #1f4fd1; cursor:pointer;
+}
+.scale-strip .ticks{
+  display:flex; gap:16px; margin-left:4px;
+  font-size:11px; opacity:.7;
+}
