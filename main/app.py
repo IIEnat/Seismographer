@@ -33,7 +33,25 @@ ingest.start()
 app.register_blueprint(create_blueprint(rx))
 
 @app.route("/")
-def home(): return render_template("home.html")
+def home():
+    return render_template("home.html")
+
+@app.route("/mock1")
+def home_mock1():
+    return render_template("home_mock1.html")
+
+@app.route("/mock2")
+def home_mock2():
+    return render_template("home_mock2.html")
+
+# --- placeholder pages --- #
+@app.route("/manual")
+def manual():
+    return render_template("manual.html")
+
+@app.route("/beamforming")
+def beamforming():
+    return render_template("beamforming.html")
 
 if __name__ == "__main__":
     app.run(debug=True)
