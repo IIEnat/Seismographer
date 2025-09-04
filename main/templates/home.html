@@ -50,58 +50,24 @@ const WAVE_URL = `/wave`;
 let   POLL_MS  = 1000;
 const CIRCLE_RADIUS_M = 1000;
 
-/* ---------------- Legend colors ---------------- */
-const LEVELS = [100, 300, 500, 800, 1200];
-const COLORS5 = [
-  {name:'Red',    hex:'#e31a1c'},
-  {name:'Green',  hex:'#33a02c'},
-  {name:'Blue',   hex:'#1f78b4'},
-  {name:'Yellow', hex:'#ffcc00'},
-  {name:'Orange', hex:'#ff7f00'}
-];
+/* ---------------- Unified color scale (10 bins @ 30k–40k) ---------------- */
+const RMS_MIN = 30000, RMS_MAX = 40000, BINS = 10;
+const RED_OOR = '#ff1744';
+const SCALE10 = ['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'];
+
+function colorForRMS_10(rms){
+  if (!Number.isFinite(rms)) return RED_OOR;
+  if (rms < RMS_MIN || rms > RMS_MAX) return RED_OOR;
+  const t = (rms - RMS_MIN) / (RMS_MAX - RMS_MIN);
+  const idx = Math.min(BINS - 1, Math.max(0, Math.floor(t * BINS)));
+  return SCALE10[idx];
+}
+
+// keep the same call sites; no station offset anymore
+function colorForStationRMS(id, rms){ return { hex: colorForRMS_10(rms), name: '' }; }
 
 /* ---------------- Helpers ---------------- */
-const stationOrder = {}; let stationSeq = 0;
 const isNum = (v) => Number.isFinite(v) && !Number.isNaN(v);
-function getStationOffset(id){ if(!(id in stationOrder)) stationOrder[id]=stationSeq++; return stationOrder[id]%COLORS5.length; }
-function rmsLevelIndex(rms){ let b=0,d=Infinity; for(let i=0;i<LEVELS.length;i++){const di=Math.abs((rms||0)-LEVELS[i]); if(di<d){b=i; d=di}} return b; }
-function colorForStationRMS(id,rms){ const idx=rmsLevelIndex(rms); const off=getStationOffset(id); return COLORS5[(idx+off)%COLORS5.length]; }
-
-/* meters -> lat/lon offset */
-function offsetLatLng(lat, lon, dx_m, dy_m){
-  const R = 6378137; // m
-  const dLat = (dy_m / R) * 180 / Math.PI;
-  const dLon = (dx_m / (R * Math.cos(lat * Math.PI / 180))) * 180 / Math.PI;
-  return [lat + dLat, lon + dLon];
-}
-
-/* compute de-overlap positions for stations sharing same lat/lon */
-function computeRenderPositions(stations){
-  const key = (s)=> `${s.lat.toFixed(6)},${s.lon.toFixed(6)}`;
-  const groups = new Map();
-  stations.forEach(s=>{
-    const k = key(s);
-    if(!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(s.id);
-  });
-  const renderPos = new Map();
-  for (const [k, ids] of groups.entries()){
-    const [lat, lon] = k.split(',').map(Number);
-    const n = ids.length;
-    if (n === 1){
-      renderPos.set(ids[0], [lat, lon]);
-      continue;
-    }
-    const Rm = 140; // ring radius in meters for separation
-    for (let i=0;i<n;i++){
-      const ang = (2*Math.PI*i)/n;
-      const dx = Rm * Math.cos(ang);
-      const dy = Rm * Math.sin(ang);
-      renderPos.set(ids[i], offsetLatLng(lat, lon, dx, dy));
-    }
-  }
-  return renderPos;
-}
 
 /* ---------------- Map ---------------- */
 const map = L.map('map', { preferCanvas: true });
@@ -153,23 +119,25 @@ function upsertMarker(s, lat, lon){
 /* ---------------- Overlays ---------------- */
 (function renderLegend(){
   const box = document.getElementById('legend');
-  let html = '<h4>RMS → Color (fixed ×5)</h4>';
-  for (let i=0;i<COLORS5.length;i++){
-    html += `<div class="row"><span class="sw" style="background:${COLORS5[i].hex}"></span><span>${COLORS5[i].name} → ~${LEVELS[i]}</span></div>`;
+  let html = '<h4>RMS 30,000 → 40,000 (10 bins)</h4>';
+  for (let i=0;i<SCALE10.length;i++){
+    const lo = Math.round(RMS_MIN + i*(RMS_MAX-RMS_MIN)/BINS);
+    const hi = Math.round(RMS_MIN + (i+1)*(RMS_MAX-RMS_MIN)/BINS);
+    html += `<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span><span>${lo}–${hi}</span></div>`;
   }
-  html += '<div class="note">Each station is offset by one color and cycles. Coincident stations are auto-separated.</div>';
+  html += `<div class="note"><b style="color:${RED_OOR}">Red</b> = outside ${RMS_MIN}–${RMS_MAX}</div>`;
   box.innerHTML = html;
 })();
 
 function updateBadges(stations){
   const root = document.getElementById('badges'); root.innerHTML = '';
   for (const s of stations){
-    const col = colorForStationRMS(s.id, s.rms);
+    const col = colorForStationRMS(s.id, s.rms).hex;
     const span = document.createElement('span');
     span.className = 'badge';
-    span.style.borderColor = col.hex;
-    span.style.color = col.hex;
-    span.textContent = `${s.id}: RMS ${s.rms != null ? s.rms.toFixed(1) : '—'} (${col.name})`;
+    span.style.borderColor = col;
+    span.style.color = col;
+    span.textContent = `${s.id}: RMS ${s.rms != null ? s.rms.toFixed(1) : '—'}`;
     span.onclick = () => loadWaveform(s.id);
     root.appendChild(span);
   }
@@ -192,11 +160,8 @@ async function poll(){
     stations = stations.map(s => ({...s, lat:Number(s.lat), lon:Number(s.lon)}))
                        .filter(s => isNum(s.lat) && isNum(s.lon));
 
-    const renderPos = computeRenderPositions(stations);
-
     for (const s of stations){
-      const pos = renderPos.get(s.id) || [s.lat, s.lon];
-      upsertMarker(s, pos[0], pos[1]);
+      upsertMarker(s, s.lat, s.lon);
     }
 
     // remove stale
@@ -209,7 +174,7 @@ async function poll(){
     });
 
     if (!firstFit && stations.length){
-      const bounds = L.latLngBounds(stations.map(s => renderPos.get(s.id) || [s.lat, s.lon]));
+      const bounds = L.latLngBounds(stations.map(s => [s.lat, s.lon]));
       if (bounds.isValid()) map.fitBounds(bounds, {padding:[30,30], maxZoom: 12});
       firstFit = true;
       loadWaveform(stations[0].id);
