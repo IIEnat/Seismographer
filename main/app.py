@@ -9,6 +9,10 @@ import numpy as np
 from flask import Flask, render_template, request, jsonify
 from werkzeug.utils import secure_filename
 from obspy import read as obspy_read, Stream, Trace
+from math import floor, ceil
+from collections import defaultdict
+from datetime import datetime, timezone, timedelta
+
 
 # ---- Live/Synthetic seedlink pieces (kept from your original app) ----
 try:
@@ -33,6 +37,8 @@ COORDS = {
     "XX.JINJ1..BHE": (-31.3752, 115.9231),
     "XX.JINJ1..BHZ": (-31.3433, 115.9667),
 }
+AWST = timezone(timedelta(hours=8))  # UTC+8
+
 
 USE_REAL_SEEDLINK = False
 
@@ -219,9 +225,11 @@ def playback_timeline(filenames: str):
     window_size = 1  # seconds per slider step
     steps = int((end - start) // window_size) + 1
 
-    return jsonify(
-        {"start_iso": start.datetime.isoformat(), "end_iso": end.datetime.isoformat(), "steps": steps}
-    )
+    return jsonify({
+    "start_iso": start.datetime.replace(tzinfo=AWST).isoformat(),
+    "end_iso": end.datetime.replace(tzinfo=AWST).isoformat(),
+    "steps": steps
+    })
 
 
 @app.route("/playback_data/<filenames>/<int:slider>")
@@ -279,7 +287,93 @@ def playback_wave(filenames: str, slider: int, station_id: str):
     vals, (fs, t0_iso, _) = _slice_concat_values(traces, t_start, t_end)
     return jsonify({"fs": float(fs or 0.0), "values": vals.astype(np.float64).tolist(), "t0_iso": t0_iso})
 
+@app.route("/playback_stats/<filenames>")
+def playback_stats(filenames: str):
+    """
+    Compute per-second RMS across the entire uploaded hour in one pass (server-side).
+    Returns the global min/max RMS (value + station id + timestamp ISO).
+    Efficient: vectorized binning by second using np.bincount; no N requests from client.
+    """
+    file_list = [f for f in filenames.split(",") if f]
+    merged = _read_streams_for_files(file_list)
+    if len(merged) == 0:
+        return jsonify({"min": None, "max": None})
 
+    # Work on Z only (matches your playback policy)
+    z_traces = [tr for tr in merged if str(tr.stats.channel).endswith("Z")]
+    if not z_traces:
+        return jsonify({"min": None, "max": None})
+
+    # Reference second grid for the hour
+    t_start = min(tr.stats.starttime for tr in z_traces)
+    t_end   = max(tr.stats.endtime   for tr in z_traces)
+    base_sec = int(floor(t_start.timestamp))                      # anchor
+    n_secs   = max(1, int(ceil(t_end.timestamp) - base_sec))      # ~3600
+
+    # Per-station accumulators: second -> sum(x^2) and count
+    sumsqs = defaultdict(lambda: np.zeros(n_secs, dtype=np.float64))
+    counts = defaultdict(lambda: np.zeros(n_secs, dtype=np.int64))
+    coords = {}  # station -> (lat, lon) (optional, not used in result)
+
+    # Vectorized binning per trace
+    for tr in z_traces:
+        sid = _station_id(tr)
+        coords.setdefault(sid, _hardcoded_latlon_for_trace(tr))
+        fs = float(getattr(tr.stats, "sampling_rate", 0.0) or 0.0)
+        if fs <= 0:
+            continue
+        data = np.asarray(tr.data, dtype=np.float64)
+        if data.size == 0:
+            continue
+
+        # Offset seconds from base
+        start_ts = tr.stats.starttime.timestamp
+        # For each sample, compute which integer-second bucket it belongs to
+        idx = np.floor((start_ts - base_sec) + np.arange(data.size) / fs).astype(np.int64)
+
+        # Keep only indices within [0, n_secs)
+        m = (idx >= 0) & (idx < n_secs)
+        if not np.any(m):
+            continue
+        idx = idx[m]
+        seg = data[m]
+        seg2 = seg * seg
+
+        # Accumulate sum of squares and counts into per-second bins
+        sumsqs[sid] += np.bincount(idx, weights=seg2, minlength=n_secs)
+        counts[sid] += np.bincount(idx, minlength=n_secs)
+
+    # Compute RMS per second for each station, then global min/max
+    best_min = None  # (rms, sid, sec_idx)
+    best_max = None
+    for sid in sumsqs.keys():
+        c = counts[sid]
+        s2 = sumsqs[sid]
+        valid = c > 0
+        if not np.any(valid):
+            continue
+        rms = np.zeros_like(s2, dtype=np.float64)
+        rms[valid] = np.sqrt(s2[valid] / c[valid])
+
+        # min (exclude zeros where no data)
+        mi_idx = np.argmin(np.where(valid, rms, np.inf))
+        ma_idx = np.argmax(np.where(valid, rms, -np.inf))
+        mi_val = rms[mi_idx] if valid[mi_idx] else np.inf
+        ma_val = rms[ma_idx] if valid[ma_idx] else -np.inf
+
+        if best_min is None or mi_val < best_min[0]:
+            best_min = (float(mi_val), sid, int(mi_idx))
+        if best_max is None or ma_val > best_max[0]:
+            best_max = (float(ma_val), sid, int(ma_idx))
+
+    def pack(item):
+        if not item:
+            return None
+        val, sid, sec_idx = item
+        iso = datetime.fromtimestamp(base_sec + sec_idx, tz=AWST).isoformat()
+        return {"value": val, "id": sid, "iso": iso}
+
+    return jsonify({"min": pack(best_min), "max": pack(best_max)})
 # ------------------ Main ------------------
 
 if __name__ == "__main__":
