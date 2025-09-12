@@ -1,0 +1,8 @@
+{
+    "x" : "coord",
+    "y" : "coord",
+    "z" : "coord",
+    "station number" : "num",
+    "timestamp" : "time",
+    "current frequency ": "frequency"
+}
