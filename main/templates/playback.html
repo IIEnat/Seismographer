@@ -20,13 +20,8 @@
 </head>
 <body>
   <div class="container">
-    <header>
-      <h1 style="margin:0;">Playback</h1>
-      <span class="sep">|</span>
-      <div class="chip chip--muted">Upload .mseed / .miniseed (multi-file supported)</div>
-      <span class="sep">|</span>
-      <a href="/" class="chip">Back to Live</a>
-    </header>
+
+    {% include "navbar.html" %}
 
     <form id="uploadForm" enctype="multipart/form-data" method="POST" style="margin:.75rem 0 1rem;">
       <input type="file" name="seedlink_file" id="seedlink_files" accept=".mseed,.seed,.dat,.miniseed" multiple required>

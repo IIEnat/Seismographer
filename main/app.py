@@ -175,7 +175,7 @@ def _coord_for_station(traces: List[Trace]) -> Tuple[float, float]:
 def home():
     # If your project has a separate "home.html" keep this; otherwise swap to playback.html
     try:
-        return render_template("home.html")
+        return render_template("home.html", title = "Live Seismic Map", active_page = "home")
     except Exception:
         return render_template("playback.html")
 
@@ -206,7 +206,7 @@ def playback():
         return jsonify({"status": "uploaded", "filenames": filenames})
 
     # GET -> playback UI
-    return render_template("playback.html")
+    return render_template("playback.html", title = "Playback File", active_page = "playback")
 
 
 @app.route("/playback_timeline/<filenames>")
