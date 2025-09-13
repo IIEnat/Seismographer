@@ -1,4 +1,4 @@
-  <header>
+<!--  <header>
     <h1>Realtime Seismic Map</h1>
     <span class="sep">|</span>
     <a href="/playback" class="chip chip--link">Go to Playback</a>
@@ -19,3 +19,25 @@
     <div class="chip chip--muted">APIs: <code>/live</code> · <code>/wave</code></div>
     <div class="chip chip--muted">Click a station to load waveform</div>
   </header>
+-->
+
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Realtime Seismic Map + Waveform</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/global.css') }}" />
+
+</head>
+<body>
+  {% include 'navbar.html' %}
+
+  {% block content %} 
+  
+  {% endblock %}
+</body>
+
