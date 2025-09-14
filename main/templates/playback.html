@@ -19,9 +19,11 @@
   </style>
 </head>
 <body>
-  <div class="container">
 
     {% include "navbar.html" %}
+
+  <div class="container">
+
 
     <form id="uploadForm" enctype="multipart/form-data" method="POST" style="margin:.75rem 0 1rem;">
       <input type="file" name="seedlink_file" id="seedlink_files" accept=".mseed,.seed,.dat,.miniseed" multiple required>
