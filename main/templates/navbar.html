@@ -25,10 +25,10 @@
 
 
 <header>
-  <!-- Page title -->
+
   <h1>{{ title }}</h1>
 
-  <!-- Conditional button: show Playback or Home depending on page -->
+
   {% if active_page == 'home' %}
     <a href="{{ url_for('playback') }}" class="chip chip--link">Go to Playback</a>
     <span class="chip chip--muted">Click a station to load its waveform</span>

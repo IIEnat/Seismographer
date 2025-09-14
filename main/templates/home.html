@@ -8,11 +8,24 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/global.css') }}" />
+  <script src ="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 </head>
 <body>
 
-  
   {% include "navbar.html" %}
+
+  <pre id="output"></pre>
+    <script>
+    const socket = io();
+
+    socket.on("connect", () => {
+      console.log("Connected to server!");
+    });
+
+    socket.on("status_update", (data) => {
+      document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+    });
+  </script>
 
   <div id="wrap">
     <div id="mapWrap" class="container-main">

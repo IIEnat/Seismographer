@@ -1,10 +1,30 @@
 # app.py
-from flask import Flask, jsonify
+from flask import Flask, jsonify, render_template, request
 from python.receiver import make_processors, start_processor_thread
+from flask_socketio import SocketIO, emit
+from python import receiver
 
 app = Flask(__name__)
 _processors = make_processors()
 _threads = [start_processor_thread(p) for p in _processors]
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Websocket
+@socketio.on("connect")
+def handle_connect():
+    print("Client Connected")
+
+@socketio.on("disconnect")
+def handle_disconnect():
+    print("Client Disconnected")
+
+processors = receiver.make_processors()
+
+def background_sender():
+    while True:
+        data = {p.sta: p.to_json() for p in processors}
+        socketio.emit("station_update", data)   # send to all connected clients
+        socketio.sleep(1)  # once per second
 
 @app.route("/")
 def home():
@@ -13,7 +33,7 @@ def home():
     try:
         return render_template("home.html", title = "Live Seismic Map", active_page = "home")
     except Exception:
-        return render_template("playback.html")
+        return render_template("playback.html", title = "Playback File", active_page = "playback")
 
 
 @app.route("/playback", methods=["GET", "POST"])
@@ -215,4 +235,5 @@ def api_status():
     return jsonify({f"{p.sta}": p.to_json() for p in _processors})
 
 if __name__ == "__main__":
-    app.run(debug=False)
+    socketio.start_background_task(background_sender)
+    socketio.run(app, debug=False, host = '0.0.0.0', port=5000)
