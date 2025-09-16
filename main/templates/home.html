@@ -22,7 +22,7 @@
       console.log("Connected to server!");
     });
 
-    socket.on("status_update", (data) => {
+    socket.on("station_update", (data) => {
       document.getElementById("output").textContent = JSON.stringify(data, null, 2);
     });
   </script>

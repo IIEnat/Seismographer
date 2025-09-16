@@ -18,13 +18,13 @@ def handle_connect():
 def handle_disconnect():
     print("Client Disconnected")
 
-processors = receiver.make_processors()
+#processors = receiver.make_processors()
 
 def background_sender():
     while True:
-        data = {p.sta: p.to_json() for p in processors}
-        socketio.emit("station_update", data)   # send to all connected clients
-        socketio.sleep(1)  # once per second
+        data = {p.sta: p.to_json() for p in _processors}
+        socketio.emit("station_update", data)   
+        socketio.sleep(1)  
 
 @app.route("/")
 def home():

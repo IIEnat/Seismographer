@@ -37,6 +37,7 @@ class StationProcessor:
         self.env_min = None
         self.env_max = None
         self.last_timestamp = None
+        self.timestamp = None
 
         # Downsample state: keep track of where we are modulo the decimation factor
         self.ds_factor = DS_FACTOR         # 50
