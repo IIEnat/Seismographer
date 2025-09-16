@@ -1,72 +1,61 @@
 """
-Generates synthetic data and streams it as ObsPy Trace objects.
-Seedlink Implementation is not yet done but should be here and replaces the synthetic one.
+This file is only used to simulate the seedlink client.
+Meant for TESTING ONLY.
+Generates synthetic ObsPy Trace objects that should look exactly like the real thing.
 """
 
-from __future__ import annotations
-import threading, time
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Callable, List, Optional
-
+import time
 import numpy as np
-from obspy import Trace, Stream, UTCDateTime
-from obspy.clients.seedlink.easyseedlink import EasySeedLinkClient
+from obspy import Trace, UTCDateTime
 
-OnTrace = Callable[[Trace], None]
+class SimEasySeedLinkClient:
+    def __init__(self, host: str, port: int = 18000, fs: float = 250.0, burst_n: int = 206, burst_dt: float = 0.824):
+        self.host = host
+        self.port = port
+        self.fs = fs
+        self.burst_n = burst_n    
+        self.burst_dt = burst_dt   
+        self.on_data = None
+        self._sel = []           
+        self._stop = False
 
-class IngestBase:
-    def start(self): raise NotImplementedError
-    def stop(self):  pass
+    def select_stream(self, net: str, sta: str, chan: str):
+        self._sel.append((net, sta, chan))
 
-@dataclass(frozen=True)
-class Chan:
-    net: str; sta: str; loc: str; cha: str
-    lat: float; lon: float; freq: float; phase: float; amp: float = 1200.0
-
-# Currently does nothing, but this should be the one for real SeedLink data.
-class SeedLinkIngest(IngestBase):
-    def __init__(self, server: str, on_trace: OnTrace):
-        self.server = server
-        self.on_trace = on_trace
-
-# Sets up traces for each station. A trace is what Obspy uses for one continuous time series for one channel from one station.
-class SyntheticIngest(IngestBase):
-    def __init__(self, chans: List[Chan], sps: float, on_trace: OnTrace):
-        self.chans = list(chans)
-        self.sps = float(sps)
-        self.on_trace = on_trace
-        self._stop = threading.Event()
-        self._t: Optional[threading.Thread] = None
-
-    def _loop(self):
-        n = int(self.sps)
-        while not self._stop.is_set():
-            t0 = datetime.now(timezone.utc)
-            ut = UTCDateTime(t0)
-            t = np.linspace(0, 1, n, endpoint=False)
-            for ch in self.chans:
-                w = np.sin(2*np.pi*(ch.freq*t + ch.phase)) + 0.15*np.random.randn(n)
-                data = (w * ch.amp).astype(np.int32)
-                tr = Trace(
-                    data=data,
-                    header={
-                        "network": ch.net, "station": ch.sta, "location": ch.loc, "channel": ch.cha,
-                        "sampling_rate": self.sps, "starttime": ut,
-                        "coordinates": {"latitude": ch.lat, "longitude": ch.lon},
-                    },
-                )
-                # This is the Obspy Trace object used to stream data for each station
-                self.on_trace(tr)
-            now = datetime.now(timezone.utc).timestamp()
-            time.sleep(max(0.0, 1.0 - (now - int(now))))
-
-    def start(self):
-        if self._t and self._t.is_alive(): return
-        self._stop.clear()
-        self._t = threading.Thread(target=self._loop, name="SyntheticIngest", daemon=True)
-        self._t.start()
-
+    def run(self):
+        if self.on_data is None:
+            raise RuntimeError("Assign .on_data before calling run()")
+        t0 = UTCDateTime()
+        phase = 0.0
+        while not self._stop:
+            for net, sta, chan in self._sel:
+                # synthetic signal: low-freq sine (~0.12 Hz) + noise
+                t = np.arange(self.burst_n) / self.fs
+                phase += 2 * np.pi * 0.12 * self.burst_dt
+                sig = 3000 * np.sin(2 * np.pi * 0.12 * t + phase) + 500 * np.random.randn(self.burst_n)
+                sig = sig.astype(np.int32)
+                tr = Trace(sig)
+                tr.stats.network = net
+                tr.stats.station = sta
+                tr.stats.channel = chan
+                tr.stats.sampling_rate = self.fs
+                tr.stats.starttime = t0
+                self.on_data(tr)
+                t0 += self.burst_n / self.fs
+            time.sleep(self.burst_dt)
     def stop(self):
-        self._stop.set()
-        if self._t: self._t.join(timeout=1.0)
+        self._stop = True
+
+# This is the exact same output as the actual seedlink server. To see it run this file directly from the terminal.
+if __name__ == "__main__":
+    def on_data(trace):
+        print(trace)
+        print(trace.data[:10])
+
+    c = SimEasySeedLinkClient("127.0.0.1", 18000)
+    c.on_data = on_data
+    c.select_stream("GG", "WAR27", "HNZ")
+    try:
+        c.run()
+    except KeyboardInterrupt:
+        c.stop()

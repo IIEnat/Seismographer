@@ -1,0 +1,52 @@
+  <!--
+  HOME
+  <header>
+    <h1>Realtime Seismic Map</h1>
+    <span class="sep">|</span>
+    <a href="/playback" class="chip chip--link">Go to Playback</a>
+    <span class="sep">|</span>
+    <div class="chip">Polling: <span id="pollMs">1000</span> ms</div>
+    <label>Interval:
+      <select id="pollSelect">
+        <option value="250">250 ms</option>
+        <option value="500">500 ms</option>
+        <option value="1000" selected>1000 ms</option>
+        <option value="2000">2000 ms</option>
+        <option value="5000">5000 ms</option>
+      </select>
+    </label>
+    <span class="sep">|</span>
+    <label><input type="checkbox" id="toggleOverlays" checked /> Show overlays</label>
+    <span class="sep">|</span>
+    <div class="chip chip--muted">APIs: <code>/live</code> · <code>/wave</code></div>
+    <div class="chip chip--muted">Click a station to load waveform</div>
+  </header>
+  -->
+
+
+<header>
+
+  <h1>{{ title }}</h1>
+
+
+  {% if active_page == 'home' %}
+    <a href="{{ url_for('playback') }}" class="chip chip--link">Go to Playback</a>
+    <span class="chip chip--muted">Click a station to load its waveform</span>
+  {% elif active_page == 'playback' %}
+    <a href="{{ url_for('home') }}" class="chip chip--link">Go to Live</a>
+    <span class="chip chip--muted">Upload .mseed or .miniseed to view its content</span>
+  {% endif %}
+</header>
+
+
+  <!--
+
+  PLAYBACK
+      <header>
+      <h1 style="margin:0;">Playback</h1>
+      <span class="sep">|</span>
+      <div class="chip chip--muted">Upload .mseed / .miniseed (multi-file supported)</div>
+      <span class="sep">|</span>
+      <a href="/" class="chip">Back to Live</a>
+    </header>
+-->
