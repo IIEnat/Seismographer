@@ -11,6 +11,8 @@ from scipy.signal import butter, sosfilt, hilbert, sosfilt_zi
 from threading import Thread
 import time
 
+from python.location_retrieval import get_location_or_fallback
+
 HOSTS = ["192.168.0.33", "192.168.0.32", "192.168.0.27"]
 NET = "GG"
 CHAN = "HNZ"
@@ -28,6 +30,7 @@ class Queues:
 class StationProcessor:
     def __init__(self, host: str, net: str, sta: str, chan: str, fs: float, band: tuple[float, float], qsize: int):
         self.host, self.net, self.sta, self.chan, self.fs = host, net, sta, chan, fs
+        self.lat, self.lon = get_location_or_fallback(host)
         self.q = Queues(band=deque(maxlen=qsize), env=deque(maxlen=qsize))
         low, high = band
         wn = (max(low, 1e-4) / (fs * 0.5), max(high, 2e-4) / (fs * 0.5))
@@ -94,6 +97,8 @@ class StationProcessor:
                 "env_len": len(self.q.env),
                 "env_min": self.env_min,
                 "env_max": self.env_max,
+                "lat": self.lat,   # <— new
+                "lon": self.lon,   # <— new
                 "band": band,
                 "env": env,
             }
