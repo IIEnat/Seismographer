@@ -1,265 +1,313 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Seismographer Playback</title>
-  <link rel="stylesheet" href="/static/css/global.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
-  <style>
-    body { background:#0f0f0f; color:#eaeaea; }
-    .container { max-width: 1100px; margin: auto; padding: 1.5rem; }
-    #seismicMap { width: 100%; height: 100%; background: #1a1a1a; }
-    header { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:.75rem; }
-    .chip{display:inline-block;border:1px solid #444;border-radius:999px;padding:.25rem .6rem;font-size:.9rem}
-    .chip--muted{opacity:.75}
-    .sep{opacity:.5}
-    .overlay.dark{color:#ddd}
-  </style>
+    <meta charset="UTF-8" />
+    <title>Seismographer Playback</title>
+    <link rel="stylesheet" href="/static/css/global.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        body { background: #0f0f0f; color: #eaeaea; }
+        .container { max-width: 1100px; margin: auto; padding: 1.5rem; }
+        #seismicMap { width: 100%; height: 100%; background: #1a1a1a; }
+        header { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-bottom: .75rem; }
+        .chip { display: inline-block; border: 1px solid #444; border-radius: 999px; padding: .25rem .6rem; font-size: .9rem; }
+        .chip--muted { opacity: .75; }
+        .sep { opacity: .5; }
+        .overlay.dark { color: #ddd; }
+    </style>
 </head>
 <body>
+    <header>
+        <h1>Playback</h1>
+        <a href="/" class="chip chip--link">Go to Live</a>
+        <span class="sep">|</span>
+        <span class="chip chip--muted">Upload .mseed / .miniseed to view content</span>
+    </header>
 
-    {% include "navbar.html" %}
+    <div class="container">
+        <form id="uploadForm" enctype="multipart/form-data" method="POST" style="margin: .75rem 0 1rem;">
+            <input type="file" name="seedlink_file" id="seedlink_files" accept=".mseed,.seed,.dat,.miniseed" multiple required>
+            <button id="uploadAndPlayBtn" type="submit" class="btn btn--primary">Upload & Play</button>
+        </form>
 
-  <div class="container">
+        <!-- MAP -->
+        <div id="mapWrap" class="container-main">
+            <div id="seismicMap"></div>
+            <div id="badges" class="overlay dark"></div>
+            <div id="legend" class="overlay dark"></div>
+            <div id="queryResult" class="overlay dark" style="right: 10px; top: 10px; left: auto;"></div>
+        </div>
 
+        <!-- CONTROLS -->
+        <div id="controls">
+            <div class="controls-row">
+                <button id="playBtn" type="button" class="btn" disabled>▶ Play</button>
+                <button id="pauseBtn" type="button" class="btn" disabled>⏸ Pause</button>
+                <select id="stationSelect" class="station-select" hidden></select>
+                <span id="sliderLabel" class="text-xs text-muted"></span>
+            </div>
 
-    <form id="uploadForm" enctype="multipart/form-data" method="POST" style="margin:.75rem 0 1rem;">
-      <input type="file" name="seedlink_file" id="seedlink_files" accept=".mseed,.seed,.dat,.miniseed" multiple required>
-      <button id="uploadAndPlayBtn" type="submit" class="btn btn--primary">Upload & Play</button>
-    </form>
+            <div class="slider-container">
+                <label for="playbackSlider" class="slider-caption">Timeline:</label>
+                <input type="range" id="playbackSlider" class="slider" min="0" max="0" value="0" disabled>
+            </div>
+        </div>
 
-    <!-- MAP -->
-    <div id="mapWrap" class="container-main">
-      <div id="seismicMap"></div>
-      <div id="badges" class="overlay dark"></div>
-      <div id="legend" class="overlay dark"></div>
-      <div id="queryResult" class="overlay dark" style="right:10px; top:10px; left:auto;"></div>
+        <!-- WAVEFORM -->
+        <div id="waveWrap" class="container-section">
+            <div id="wave"></div>
+        </div>
     </div>
 
-    <!-- CONTROLS -->
-    <div id="controls">
-      <div class="controls-row">
-        <button id="playBtn" type="button" class="btn" disabled>▶ Play</button>
-        <button id="pauseBtn" type="button" class="btn" disabled>⏸ Pause</button>
-        <select id="stationSelect" class="station-select" hidden></select>
-        <span id="sliderLabel" class="text-xs text-muted"></span>
-      </div>
+    <script>
+        let RMS_MIN = 30000, RMS_MAX = 40000;
+        const BINS = 10;
+        const RED_OOR = '#ff1744';
+        const SCALE10 = ['#440154', '#482878', '#3e4a89', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'];
 
-      <div class="slider-container">
-        <label for="playbackSlider" class="slider-caption">Timeline:</label>
-        <input type="range" id="playbackSlider" class="slider" min="0" max="0" value="0" disabled>
-      </div>
-    </div>
+        function setColorRange(minV, maxV) {
+            if (Number.isFinite(minV) && Number.isFinite(maxV) && minV < maxV) {
+                RMS_MIN = minV;
+                RMS_MAX = maxV;
+                renderLegend();
+                refreshMap();
+            }
+        }
 
-    <!-- WAVEFORM -->
-    <div id="waveWrap" class="container-section">
-      <div id="wave"></div>
-    </div>
-  </div>
+        function colorForRMS_10(rms) {
+            if (!Number.isFinite(rms)) return RED_OOR;
+            if (rms < RMS_MIN || rms > RMS_MAX) return RED_OOR;
+            const t = (rms - RMS_MIN) / (RMS_MAX - RMS_MIN);
+            const idx = Math.min(BINS - 1, Math.max(0, Math.floor(t * BINS)));
+            return SCALE10[idx];
+        }
 
-<script>
-let RMS_MIN = 30000, RMS_MAX = 40000;
-const BINS = 10;
-const RED_OOR = '#ff1744';
-const SCALE10 = ['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'];
+        function fmtAWST(x) {
+            const d = (x instanceof Date) ? x : new Date(x);
+            const parts = new Intl.DateTimeFormat("en-AU", {
+                timeZone: "Australia/Perth",
+                year: "numeric", month: "2-digit", day: "2-digit",
+                hour: "2-digit", minute: "2-digit", second: "2-digit",
+                hour12: false
+            }).formatToParts(d).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+            return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} AWST`;
+        }
 
-function setColorRange(minV, maxV){
-  if (Number.isFinite(minV) && Number.isFinite(maxV) && minV < maxV) {
-    RMS_MIN = minV; RMS_MAX = maxV;
-    renderLegend(); refreshMap();
-  }
-}
-function colorForRMS_10(rms){
-  if (!Number.isFinite(rms)) return RED_OOR;
-  if (rms < RMS_MIN || rms > RMS_MAX) return RED_OOR;
-  const t = (rms - RMS_MIN) / (RMS_MAX - RMS_MIN);
-  const idx = Math.min(BINS - 1, Math.max(0, Math.floor(t * BINS)));
-  return SCALE10[idx];
-}
-function fmtAWST(x){
-  const d = (x instanceof Date) ? x : new Date(x);
-  const parts = new Intl.DateTimeFormat("en-AU", {
-    timeZone: "Australia/Perth",
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false
-  }).formatToParts(d).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
-  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} AWST`;
-}
+        let uploadedFilenames = [], sliderMin = 0, sliderMax = 0, sliderStartISO = null, sliderEndISO = null,
+            selectedStationId = null, playTimer = null;
+        const slider = document.getElementById('playbackSlider'),
+              sliderLabel = document.getElementById('sliderLabel'),
+              playBtn = document.getElementById('playBtn'),
+              pauseBtn = document.getElementById('pauseBtn'),
+              stationSelect = document.getElementById('stationSelect');
 
-let uploadedFilenames=[], sliderMin=0, sliderMax=0, sliderStartISO=null, sliderEndISO=null,
-    selectedStationId=null, playTimer=null;
-const slider=document.getElementById('playbackSlider'),
-      sliderLabel=document.getElementById('sliderLabel'),
-      playBtn=document.getElementById('playBtn'),
-      pauseBtn=document.getElementById('pauseBtn'),
-      stationSelect=document.getElementById('stationSelect');
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const filesInput = document.getElementById('seedlink_files');
+            const formData = new FormData();
+            for (let i = 0; i < filesInput.files.length; i++) formData.append('seedlink_file', filesInput.files[i]);
+            const res = await fetch('/playback', { method: 'POST', body: formData });
+            const data = await res.json().catch(() => ({}));
+            if (data.status !== 'uploaded') { alert('Upload failed'); return; }
 
-document.getElementById('uploadForm').addEventListener('submit', async (e)=>{
-  e.preventDefault();
-  const filesInput=document.getElementById('seedlink_files');
-  const formData=new FormData();
-  for (let i=0;i<filesInput.files.length;i++) formData.append('seedlink_file',filesInput.files[i]);
-  const res=await fetch('/playback',{method:'POST',body:formData});
-  const data=await res.json().catch(()=>({}));
-  if (data.status!=='uploaded'){ alert('Upload failed'); return; }
+            uploadedFilenames = Array.isArray(data.filenames) ? data.filenames : [data.filename];
+            await initTimeline();
 
-  uploadedFilenames=Array.isArray(data.filenames)?data.filenames:[data.filename];
-  await initTimeline();
+            try {
+                const stats = await fetchJSON(`/playback_stats/${uploadedFilenames.join(',')}`);
+                const vmin = stats?.min?.value, vmax = stats?.max?.value;
+                const out = document.getElementById('queryResult');
+                if (Number.isFinite(vmin) && Number.isFinite(vmax) && vmax > vmin) {
+                    out.innerHTML = `<b>Detected Hour RMS Range</b><br/>
+                        Min: ${vmin.toFixed(1)} @ <code>${stats.min.id}</code> (${fmtAWST(stats.min.iso)})<br/>
+                        Max: ${vmax.toFixed(1)} @ <code>${stats.max.id}</code> (${fmtAWST(stats.max.iso)})`;
+                    const ok = window.confirm(`Detected hour min/max RMS:\n\nmin = ${vmin.toFixed(1)}\nmax = ${vmax.toFixed(1)}\n\nUse this as the 10-bin color range?`);
+                    if (ok) setColorRange(vmin, vmax);
+                } else { out.textContent = 'Could not detect min/max RMS'; }
+            } catch { document.getElementById('queryResult').textContent = 'Stats error'; }
 
-  try {
-    const stats=await fetchJSON(`/playback_stats/${uploadedFilenames.join(',')}`);
-    const vmin=stats?.min?.value, vmax=stats?.max?.value;
-    const out=document.getElementById('queryResult');
-    if (Number.isFinite(vmin)&&Number.isFinite(vmax)&&vmax>vmin){
-      out.innerHTML=`<b>Detected Hour RMS Range</b><br/>
-        Min: ${vmin.toFixed(1)} @ <code>${stats.min.id}</code> (${fmtAWST(stats.min.iso)})<br/>
-        Max: ${vmax.toFixed(1)} @ <code>${stats.max.id}</code> (${fmtAWST(stats.max.iso)})`;
-      const ok=window.confirm(`Detected hour min/max RMS:\n\nmin = ${vmin.toFixed(1)}\nmax = ${vmax.toFixed(1)}\n\nUse this as the 10-bin color range?`);
-      if (ok) setColorRange(vmin, vmax);
-    } else { out.textContent='Could not detect min/max RMS'; }
-  } catch { document.getElementById('queryResult').textContent='Stats error'; }
+            await refreshMap();
+            await drawWave();
+            setPlayingState(false);
+        });
 
-  await refreshMap(); await drawWave(); setPlayingState(false);
-});
+        async function initTimeline() {
+            const res = await fetch(`/playback_timeline/${uploadedFilenames.join(',')}`, { cache: 'no-store' });
+            const t = await res.json();
+            sliderStartISO = t.start_iso;
+            sliderEndISO = t.end_iso;
+            sliderMin = 0;
+            sliderMax = Math.max(0, (t.steps ?? 1) - 1);
+            slider.min = sliderMin;
+            slider.max = sliderMax;
+            slider.value = sliderMin;
+            slider.disabled = false;
+            updateSliderLabel();
+        }
 
-async function initTimeline(){
-  const res=await fetch(`/playback_timeline/${uploadedFilenames.join(',')}`,{cache:'no-store'});
-  const t=await res.json();
-  sliderStartISO=t.start_iso; sliderEndISO=t.end_iso;
-  sliderMin=0; sliderMax=Math.max(0,(t.steps??1)-1);
-  slider.min=sliderMin; slider.max=sliderMax; slider.value=sliderMin;
-  slider.disabled=false; updateSliderLabel();
-}
-slider.addEventListener('input', async ()=>{
-  updateSliderLabel(); await refreshMap(); await drawWave();
-});
+        slider.addEventListener('input', async () => {
+            updateSliderLabel();
+            await refreshMap();
+            await drawWave();
+        });
 
-function updateSliderLabel(){
-  if (!sliderStartISO||!sliderEndISO){ sliderLabel.textContent=''; return; }
-  const curISO=getSliderISO(Number(slider.value));
-  sliderLabel.textContent=`${fmtAWST(sliderStartISO)} — ${fmtAWST(sliderEndISO)} | Current: ${fmtAWST(curISO)}`;
-}
-function getSliderISO(val){
-  const start=new Date(sliderStartISO).getTime();
-  const end=new Date(sliderEndISO).getTime();
-  const step=(end-start)/(sliderMax-sliderMin||1);
-  return new Date(start+(val-sliderMin)*step).toISOString();
-}
+        function updateSliderLabel() {
+            if (!sliderStartISO || !sliderEndISO) { sliderLabel.textContent = ''; return; }
+            const curISO = getSliderISO(Number(slider.value));
+            sliderLabel.textContent = `${fmtAWST(sliderStartISO)} — ${fmtAWST(sliderEndISO)} | Current: ${fmtAWST(curISO)}`;
+        }
 
-let map=null, markers=[];
-function ensureMap(){ if(map)return;
-  map=L.map('seismicMap',{preferCanvas:true}).setView([-31.35,115.92],10);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    {maxZoom:18, attribution:'© OpenStreetMap'}).addTo(map);
-}
-function populateStationSelect(stations){
-  if(!stations||stations.length<=1){ stationSelect.hidden=true; stationSelect.replaceChildren(); return; }
-  stationSelect.hidden=false;
-  stationSelect.replaceChildren(...stations.map(st=>{
-    const opt=document.createElement('option'); opt.value=st.id; opt.textContent=st.id; return opt;
-  }));
-  if(!selectedStationId) selectedStationId=stations[0].id;
-  stationSelect.value=selectedStationId;
-}
+        function getSliderISO(val) {
+            const start = new Date(sliderStartISO).getTime();
+            const end = new Date(sliderEndISO).getTime();
+            const step = (end - start) / (sliderMax - sliderMin || 1);
+            return new Date(start + (val - sliderMin) * step).toISOString();
+        }
 
-async function refreshMap(){
-  if(!uploadedFilenames.length)return;
-  ensureMap(); markers.forEach(m=>map.removeLayer(m)); markers=[];
-  const step=Number(slider.value);
-  const data=await fetchJSON(`/playback_data/${uploadedFilenames.join(',')}/${step}`);
-  const stations=Array.isArray(data.stations)?data.stations:[];
-  if(!selectedStationId&&stations.length)selectedStationId=stations[0].id;
-  populateStationSelect(stations);
+        let map = null, markers = [];
+        function ensureMap() {
+            if (map) return;
+            map = L.map('seismicMap', { preferCanvas: true }).setView([-31.35, 115.92], 10);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(map);
+        }
 
-  stations.forEach(st=>{
-    const col=colorForRMS_10(st.rms);
-    const m=L.circle([st.lat,st.lon],{
-      radius:1000,color:'#222',weight:2,fillColor:col,fillOpacity:0.75
-    }).addTo(map).bindPopup(
-      `<b>${st.id}</b><br>RMS: ${st.rms.toFixed(1)}<br>${fmtAWST(sliderStartISO)}`
-    );
-    m.on('click', async()=>{selectedStationId=st.id;stationSelect.value=st.id;await drawWave();});
-    markers.push(m);
-  });
+        function populateStationSelect(stations) {
+            if (!stations || stations.length <= 1) { stationSelect.hidden = true; stationSelect.replaceChildren(); return; }
+            stationSelect.hidden = false;
+            stationSelect.replaceChildren(...stations.map(st => {
+                const opt = document.createElement('option');
+                opt.value = st.id;
+                opt.textContent = st.id;
+                return opt;
+            }));
+            if (!selectedStationId) selectedStationId = stations[0].id;
+            stationSelect.value = selectedStationId;
+        }
 
-  const badges=document.getElementById('badges');
-  badges.innerHTML=stations.map(st=>
-    `<span class="chip" style="border-color:${colorForRMS_10(st.rms)};color:${colorForRMS_10(st.rms)}">
-      ${st.id}: <b>${st.rms.toFixed(1)}</b></span>`
-  ).join(' ');
-  renderLegend();
-}
+        async function refreshMap() {
+            if (!uploadedFilenames.length) return;
+            ensureMap();
+            markers.forEach(m => map.removeLayer(m));
+            markers = [];
+            const step = Number(slider.value);
+            const data = await fetchJSON(`/playback_data/${uploadedFilenames.join(',')}/${step}`);
+            const stations = Array.isArray(data.stations) ? data.stations : [];
+            if (!selectedStationId && stations.length) selectedStationId = stations[0].id;
+            populateStationSelect(stations);
 
-stationSelect.addEventListener('change', async()=>{
-  selectedStationId=stationSelect.value; await drawWave();
-});
+            stations.forEach(st => {
+                const col = colorForRMS_10(st.rms);
+                const m = L.circle([st.lat, st.lon], {
+                    radius: 1000, color: '#222', weight: 2, fillColor: col, fillOpacity: 0.75
+                }).addTo(map).bindPopup(
+                    `<b>${st.id}</b><br>RMS: ${st.rms.toFixed(1)}<br>${fmtAWST(sliderStartISO)}`
+                );
+                m.on('click', async () => {
+                    selectedStationId = st.id;
+                    stationSelect.value = st.id;
+                    await drawWave();
+                });
+                markers.push(m);
+            });
 
-function renderLegend(){
-  const box=document.getElementById('legend');
-  let html=`<h4>RMS ${Math.round(RMS_MIN)} → ${Math.round(RMS_MAX)} (10 bins)</h4>`;
-  for(let i=0;i<SCALE10.length;i++){
-    const lo=RMS_MIN+i*(RMS_MAX-RMS_MIN)/BINS;
-    const hi=RMS_MIN+(i+1)*(RMS_MAX-RMS_MIN)/BINS;
-    html+=`<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span>
-      <span>${lo.toFixed(1)}–${hi.toFixed(1)}</span></div>`;
-  }
-  html+=`<div class="note"><b style="color:${RED_OOR}">Red</b> = outside ${RMS_MIN.toFixed(1)}–${RMS_MAX.toFixed(1)}</div>`;
-  box.innerHTML=html;
-}
+            const badges = document.getElementById('badges');
+            badges.innerHTML = stations.map(st =>
+                `<span class="chip" style="border-color:${colorForRMS_10(st.rms)};color:${colorForRMS_10(st.rms)}">
+                    ${st.id}: <b>${st.rms.toFixed(1)}</b></span>`
+            ).join(' ');
+            renderLegend();
+        }
 
-async function drawWave(){
-  if(!uploadedFilenames.length||!selectedStationId)return;
-  const step=Number(slider.value);
-  const url=`/playback_wave/${uploadedFilenames.join(',')}/${step}/${encodeURIComponent(selectedStationId)}`;
-  const w=await fetchJSON(url);
-  const fs=Number(w.fs||0);
-  const values=Array.isArray(w.values)?w.values:[];
-  const t0=w.t0_iso?new Date(w.t0_iso):null;
-  if(!values.length){
-    Plotly.react('wave',[],{paper_bgcolor:'#111',plot_bgcolor:'#111',
-      margin:{l:50,r:10,t:10,b:40},xaxis:{gridcolor:'#333'},yaxis:{gridcolor:'#333'}});
-    return;
-  }
-  const dt=fs>0?1.0/fs:0.004;
-  const xs=t0?values.map((_,i)=>new Date(t0.getTime()+i*dt*1000)):values.map((_,i)=>i);
-  Plotly.react('wave',[{x:xs,y:values,type:'scatter',mode:'lines',name:selectedStationId}],
-    {paper_bgcolor:'#111',plot_bgcolor:'#111',font:{color:'#eaeaea'},
-      margin:{l:50,r:10,t:10,b:40},xaxis:{title:'time',gridcolor:'#333'},
-      yaxis:{title:'amplitude',gridcolor:'#333'},uirevision:'keep'},
-    {responsive:true});
-}
+        stationSelect.addEventListener('change', async () => {
+            selectedStationId = stationSelect.value;
+            await drawWave();
+        });
 
-function setPlayingState(isPlaying){
-  playBtn.disabled=isPlaying||slider.disabled;
-  pauseBtn.disabled=!isPlaying||slider.disabled;
-}
-async function stepOnce(){
-  const next=Math.min(Number(slider.max),Number(slider.value)+1);
-  slider.value=next; updateSliderLabel(); await refreshMap(); await drawWave();
-  if(next>=Number(slider.max)) stopPlaying();
-}
-function startPlaying(intervalMs=1000){
-  if(playTimer||slider.disabled) return;
-  setPlayingState(true); playTimer=setInterval(stepOnce,intervalMs);
-}
-function stopPlaying(){
-  if(playTimer) clearInterval(playTimer);
-  playTimer=null; setPlayingState(false);
-}
-playBtn.addEventListener('click',()=>startPlaying(1000));
-pauseBtn.addEventListener('click',stopPlaying);
+        function renderLegend() {
+            const box = document.getElementById('legend');
+            let html = `<h4>RMS ${Math.round(RMS_MIN)} → ${Math.round(RMS_MAX)} (10 bins)</h4>`;
+            for (let i = 0; i < SCALE10.length; i++) {
+                const lo = RMS_MIN + i * (RMS_MAX - RMS_MIN) / BINS;
+                const hi = RMS_MIN + (i + 1) * (RMS_MAX - RMS_MIN) / BINS;
+                html += `<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span>
+                    <span>${lo.toFixed(1)}–${hi.toFixed(1)}</span></div>`;
+            }
+            html += `<div class="note"><b style="color:${RED_OOR}">Red</b> = outside ${RMS_MIN.toFixed(1)}–${RMS_MAX.toFixed(1)}</div>`;
+            box.innerHTML = html;
+        }
 
-async function fetchJSON(url){
-  const res=await fetch(url,{cache:'no-store'});
-  if(!res.ok) throw new Error('Request failed');
-  return res.json();
-}
-</script>
+        async function drawWave() {
+            if (!uploadedFilenames.length || !selectedStationId) return;
+            const step = Number(slider.value);
+            const url = `/playback_wave/${uploadedFilenames.join(',')}/${step}/${encodeURIComponent(selectedStationId)}`;
+            const w = await fetchJSON(url);
+            const fs = Number(w.fs || 0);
+            const values = Array.isArray(w.values) ? w.values : [];
+            const t0 = w.t0_iso ? new Date(w.t0_iso) : null;
+            if (!values.length) {
+                Plotly.react('wave', [], {
+                    paper_bgcolor: '#111', plot_bgcolor: '#111',
+                    margin: { l: 50, r: 10, t: 10, b: 40 },
+                    xaxis: { gridcolor: '#333' }, yaxis: { gridcolor: '#333' }
+                });
+                return;
+            }
+            const dt = fs > 0 ? 1.0 / fs : 0.004;
+            const xs = t0 ? values.map((_, i) => new Date(t0.getTime() + i * dt * 1000)) : values.map((_, i) => i);
+            Plotly.react('wave', [{
+                x: xs,
+                y: values,
+                type: 'scatter',
+                mode: 'lines',
+                name: selectedStationId
+            }], {
+                paper_bgcolor: '#111',
+                plot_bgcolor: '#111',
+                font: { color: '#eaeaea' },
+                margin: { l: 50, r: 10, t: 10, b: 40 },
+                xaxis: { title: 'time', gridcolor: '#333' },
+                yaxis: { title: 'amplitude', gridcolor: '#333' },
+                uirevision: 'keep'
+            }, { responsive: true });
+        }
 
+        function setPlayingState(isPlaying) {
+            playBtn.disabled = isPlaying || slider.disabled;
+            pauseBtn.disabled = !isPlaying || slider.disabled;
+        }
 
+        async function stepOnce() {
+            const next = Math.min(Number(slider.max), Number(slider.value) + 1);
+            slider.value = next;
+            updateSliderLabel();
+            await refreshMap();
+            await drawWave();
+            if (next >= Number(slider.max)) stopPlaying();
+        }
 
+        function startPlaying(intervalMs = 1000) {
+            if (playTimer || slider.disabled) return;
+            setPlayingState(true);
+            playTimer = setInterval(stepOnce, intervalMs);
+        }
+
+        function stopPlaying() {
+            if (playTimer) clearInterval(playTimer);
+            playTimer = null;
+            setPlayingState(false);
+        }
+
+        playBtn.addEventListener('click', () => startPlaying(1000));
+        pauseBtn.addEventListener('click', stopPlaying);
+
+        async function fetchJSON(url) {
+            const res = await fetch(url, { cache: 'no-store' });
+            if (!res.ok) throw new Error('Request failed');
+            return res.json();
+        }
+    </script>
 </body>
 </html>
