@@ -10,7 +10,7 @@ body {
   color: #eaeaea;
 }
 
-/* ------ Generic containers (main + smaller sections) ------ */
+/* ------ Containers ------ */
 .container { width: min(1200px, 92vw); margin-inline: auto; padding: 12px; }
 .container-main { position: relative; }
 .container-section { background:#111; border-top:1px solid #222; padding:8px 8px 0; }
@@ -25,76 +25,62 @@ header .sep { opacity:.35 }
 header label, header .chip { font-size:12px; color:#ddd; }
 header select { margin-left:6px; }
 
-/* ------ Layout (map + wave) ------ */
-#wrap { display:flex; flex-direction:column; height: calc(100vh - 48px); min-height: 520px; }
-#mapWrap { position:relative; flex: 0 0 60vh; min-height: 320px; margin-bottom:16px; }
-#map, #seismicMap { position:absolute; inset:0; }  /* ensure Leaflet fills */
-#waveWrap { flex: 1 1 40vh; min-height: 240px; margin-top:8px; }
-#wave { width:100%; height:100%; min-height: 230px; }
-
-/* ------ Overlays (above Leaflet controls) ------ */
-.overlay {
-  position:absolute; z-index: 10005;
-  background: rgba(255,255,255,.96);
-  border-radius: 12px; box-shadow: 0 8px 26px rgba(0,0,0,.25);
-  padding:10px 12px; color:#111;
+/* ------ Layout: map + side panel ------ */
+#wrap.with-panel {
+  display:grid;
+  grid-template-columns: 1fr 320px;
+  gap: 12px;
+  width: min(1200px, 92vw);
+  margin-inline: auto;
+  padding: 12px;
+  min-height: 520px;
 }
-.overlay.dark { background: rgba(20,20,20,.94); color:#eaeaea; border:1px solid #2a2a2a; }
-#legend { left:10px; bottom:10px; min-width: 170px; }
-#badges { left:10px; top:10px; display:flex; gap:6px; flex-wrap:wrap; max-width:min(92vw, 640px); }
+#mapWrap { position:relative; min-height: 340px; }
+#map, #seismicMap { position:absolute; inset:0; }
 
-/* ------ Legend ------ */
-#legend h4 { margin:0 0 6px; font-size:13px; font-weight:700; }
-#legend .row { display:flex; align-items:center; gap:8px; margin:4px 0; font-size:12px; }
-#legend .sw { width:14px; height:14px; border-radius:3px; border:1px solid rgba(0,0,0,.25); }
-#legend .note { margin-top:6px; font-size:11px; opacity:.8 }
+/* ------ Side panel ------ */
+#sidePanel {
+  background:#111; border:1px solid #222; border-radius:12px; padding:12px;
+  box-shadow:0 4px 18px rgba(0,0,0,.2); height: 100%; overflow:auto;
+}
+.panel-section { margin-bottom: 14px; }
+.panel-title { font-size:14px; margin:0 0 8px; font-weight:700; }
+.panel-kv { display:flex; justify-content:space-between; font-size:12px; margin:4px 0; }
+.panel-chips { display:flex; flex-wrap:wrap; gap:6px; }
+.panel-note { font-size:11px; opacity:.8; margin-top:6px; }
+
+.legend-row { display:flex; align-items:center; gap:8px; margin:4px 0; font-size:12px; }
+.legend-row .sw { width:14px; height:14px; border-radius:3px; border:1px solid rgba(0,0,0,.25); }
 
 /* ------ Tooltip above markers ------ */
 .rmsTip { background: rgba(0,0,0,.75); color:#fff; border:none; border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
 .rmsTip .leaflet-tooltip-content { margin:6px 8px; font-size:12px; line-height:1.2; }
 
-/* ------ Badges ------ */
-.badge {
-  font-size:12px; padding:4px 6px; border-radius:8px; border:1px solid #555;
-  background:rgba(35,35,35,.9); color:#eaeaea; white-space:nowrap; cursor:pointer;
-}
-
-/* ------ Chips, buttons, cards (generic UI) ------ */
-.chip { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border:1px solid #2a2a2a; border-radius:999px; background:#1a1a1a; }
+/* ------ Chips/buttons ------ */
+.chip { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border:1px solid #2a2a2a; border-radius:999px; background:#1a1a1a; color:#eaeaea; cursor:pointer; font-size:12px; }
 .chip--muted { opacity:.8; }
 
 .btn { display:inline-flex; align-items:center; justify-content:center; height:32px; padding:0 12px; border-radius:8px; border:1px solid #333; background:#1a1a1a; color:#eaeaea; cursor:pointer; }
 .btn:hover { filter: brightness(1.1); }
 .btn:active { transform: translateY(1px); }
 .btn--primary { background:#2563eb; border-color:#1f4fd1; color:#fff; }
-.btn--outline { background:transparent; border-color:#444; }
 .btn:disabled { opacity:.55; cursor:not-allowed; }
 
-.card { background:#141414; border:1px solid #222; border-radius:12px; padding:12px; box-shadow:0 4px 18px rgba(0,0,0,.2); }
-
-/* ------ Controls area under the map ------ */
-#controls { margin: 12px 0 0; }
-.controls-row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-bottom:.5rem; }
-.slider-container { display:flex; align-items:center; gap:.75rem; }
-.slider { width: clamp(260px, 60vw, 900px); }
-.slider-caption { min-width:80px; opacity:.9; }
-.station-select {
-  background:#111; color:#eaeaea; border:1px solid #444; border-radius:6px; padding:.35rem .5rem;
+/* ------ Startup overlay ------ */
+.overlay-startup {
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  background: rgba(0,0,0,.65); color:#fff; z-index:10020; font-size:14px; pointer-events: none;
+}
+.overlay-startup__box {
+  pointer-events:auto; background: rgba(17,17,17,.95); border:1px solid #333; border-radius:10px;
+  padding:12px 16px; box-shadow: 0 10px 28px rgba(0,0,0,.35);
 }
 
-/* ------ Simple grid helpers ------ */
-.row { display:flex; flex-wrap:wrap; gap:12px; }
-.col { flex:1 1 0; min-width:180px; }
-
-/* ------ Text helpers ------ */
-.text-xs { font-size:12px; }
-.text-muted { opacity:.7; }
+/* ------ Wave plot fixed height ------ */
+#wave { width: min(1200px, 92vw); height: 360px; min-height: 320px; margin: 0 auto 12px; }
 
 /* ------ Responsive ------ */
-@media (max-width: 640px) {
-  #mapWrap { flex-basis: 56vh; }
-  #badges { max-width: 86vw; }
+@media (max-width: 800px) {
+  #wrap.with-panel { grid-template-columns: 1fr; }
+  #sidePanel { height:auto; }
 }
-
-/* Concrete waveform height for Plotly */
-#wave { width: 100%; height: 360px; min-height: 320px; }
