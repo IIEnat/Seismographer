@@ -19,6 +19,63 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
     """
     bp = Blueprint("playback", __name__)
 
+    # ---------- Data Extraction for JSON Structure ----------
+    def extract_station_json(tr: Trace, env_fs: float = 1.0) -> dict:
+        """
+        Extracts the required JSON structure for a single trace (station/channel).
+        Downsamples envelope and band arrays to env_fs (default 1Hz) for storage efficiency.
+        """
+        # Envelope: absolute value of the analytic signal (Hilbert transform)
+        from scipy.signal import hilbert, decimate
+        data = np.asarray(tr.data, dtype=np.float64)
+        if data.size == 0:
+            return None
+        # Envelope calculation
+        analytic = hilbert(data)
+        envelope = np.abs(analytic)
+        # Downsample envelope and band to 1Hz (or as close as possible)
+        fs = float(getattr(tr.stats, "sampling_rate", 0.0) or 0.0)
+        if fs <= 0:
+            return None
+        decim = max(1, int(round(fs / env_fs)))
+        env_ds = envelope[::decim]
+        band_ds = data[::decim]
+        MAX = 3600
+        env_ds  = env_ds[:MAX]
+        band_ds = band_ds[:MAX]
+        env_min = float(np.min(env_ds)) if env_ds.size else 0.0
+        env_max = float(np.max(env_ds)) if env_ds.size else 0.0
+        t0 = tr.stats.starttime.datetime.replace(tzinfo=awst_tz)
+        return {
+            "timestamp": t0.isoformat(),
+            "band_len": int(len(band_ds)),
+            "env_len": int(len(env_ds)),
+            "env_min": env_min,
+            "env_max": env_max,
+            "band": band_ds.tolist(),
+            "env": env_ds.tolist()
+        }
+
+    @bp.route("/playback_json/<filenames>")
+    def playback_json(filenames: str):
+        """
+        Returns a JSON object for each station in the uploaded files, with the required structure.
+        Only the first trace for each station is used for demonstration.
+        """
+        file_list = [f for f in filenames.split(",") if f]
+        merged = _read_streams_for_files(file_list)
+        if len(merged) == 0:
+            return jsonify({"stations": []})
+        by_station = _group_traces_by_station(merged)
+        result = []
+        for sid, traces in by_station.items():
+            # Use the first trace for each station for this demo
+            js = extract_station_json(traces[0])
+            if js:
+                js["id"] = sid
+                result.append(js)
+        return jsonify({"stations": result})
+
     # ---------- Helpers (scoped to this blueprint) ----------
     def clear_uploads_folder() -> None:
         """Remove previous batch so each upload is a fresh set."""
@@ -28,6 +85,7 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
             except Exception:
                 pass
 
+    # Read all uploaded files into one ObsPy Stream, stores in a object
     def _read_streams_for_files(filenames: List[str]) -> Stream:
         """Read all uploaded files into a single ObsPy Stream (concatenated)."""
         merged = Stream()
