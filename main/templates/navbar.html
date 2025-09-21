@@ -1,0 +1,14 @@
+<header>
+  <h1 style="margin:0;">{{ title or "Seismographer" }}</h1>
+
+  {% if active_page == 'home' %}
+    <a href="{{ url_for('playback') }}" class="chip">Go to Playback</a>
+    <span class="chip chip--muted">Click a station to view its band-pass & envelope</span>
+  {% elif active_page == 'playback' %}
+    <a href="{{ url_for('home') }}" class="chip">Go to Live</a>
+    <span class="chip chip--muted">Upload MiniSEED, then scrub the timeline</span>
+  {% else %}
+    <a href="{{ url_for('home') }}" class="chip">Live</a>
+    <a href="{{ url_for('playback') }}" class="chip">Playback</a>
+  {% endif %}
+</header>

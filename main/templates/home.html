@@ -2,36 +2,16 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Realtime Seismic Map + Waveform</title>
+  <title>Live Seismic (Band-pass + Envelope)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/global.css') }}" />
 </head>
 <body>
-  <header>
-    <h1>Realtime Seismic Map</h1>
-    <span class="sep">|</span>
-    <a href="/playback" class="chip chip--link">Go to Playback</a>
-    <span class="sep">|</span>
-    <div class="chip">Polling: <span id="pollMs">1000</span> ms</div>
-    <label>Interval:
-      <select id="pollSelect">
-        <option value="250">250 ms</option>
-        <option value="500">500 ms</option>
-        <option value="1000" selected>1000 ms</option>
-        <option value="2000">2000 ms</option>
-        <option value="5000">5000 ms</option>
-      </select>
-    </label>
-    <span class="sep">|</span>
-    <label><input type="checkbox" id="toggleOverlays" checked /> Show overlays</label>
-    <span class="sep">|</span>
-    <div class="chip chip--muted">APIs: <code>/live</code> · <code>/wave</code></div>
-    <div class="chip chip--muted">Click a station to load waveform</div>
-  </header>
-
+  {% include "navbar.html" %}
   <div id="wrap">
     <div id="mapWrap" class="container-main">
       <div id="map"></div>
@@ -44,201 +24,118 @@
   </div>
 
 <script>
-/* ---------------- Config ---------------- */
-const LIVE_URL = `/live`;
-const WAVE_URL = `/wave`;
-let   POLL_MS  = 1000;
-const CIRCLE_RADIUS_M = 1000;
+/* ------------ Color scale (normalized 0..1, 10 bins) ------------ */
+const BINS=10, RED='#ff1744';
+const SCALE10=['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'];
+const lastSnapById = {};   // id -> latest socket payload for that station
 
-/* ---------------- Unified color scale (10 bins @ 30k–40k) ---------------- */
-const RMS_MIN = 30000, RMS_MAX = 40000, BINS = 10;
-const RED_OOR = '#ff1744';
-const SCALE10 = ['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'];
+const colorForNorm = v => (!Number.isFinite(v) || v<0 || v>1) ? RED : SCALE10[Math.min(BINS-1, Math.max(0, Math.floor(v*BINS)))];
+const fmt = v => Number.isFinite(v) ? v.toFixed(1) : '—';
+const fmtPct = v => Number.isFinite(v) ? (v*100).toFixed(0)+'%' : '—';
 
-function colorForRMS_10(rms){
-  if (!Number.isFinite(rms)) return RED_OOR;
-  if (rms < RMS_MIN || rms > RMS_MAX) return RED_OOR;
-  const t = (rms - RMS_MIN) / (RMS_MAX - RMS_MIN);
-  const idx = Math.min(BINS - 1, Math.max(0, Math.floor(t * BINS)));
-  return SCALE10[idx];
-}
-
-// keep the same call sites; no station offset anymore
-function colorForStationRMS(id, rms){ return { hex: colorForRMS_10(rms), name: '' }; }
-
-/* ---------------- Helpers ---------------- */
-const isNum = (v) => Number.isFinite(v) && !Number.isNaN(v);
-
-/* ---------------- Map ---------------- */
-const map = L.map('map', { preferCanvas: true });
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap'}).addTo(map);
-map.setView([0,0], 2);
+/* ------------------------------ Map ------------------------------ */
+const map=L.map('map',{preferCanvas:true});
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+map.setView([-31.35,115.92],10);
 requestAnimationFrame(()=>map.invalidateSize());
 window.addEventListener('resize', ()=>map.invalidateSize());
 
-const stationLayer = L.layerGroup().addTo(map);
-const markers = {}; // id -> {group,circle,marker,tip}
-let firstFit = false;
+const stationLayer=L.layerGroup().addTo(map), markers={};
+let firstFit=false, openId=null;
 
-function ensureMarker(s, lat, lon){
+function ensureMarker(s){
   if (markers[s.id]) return markers[s.id];
-  const color = colorForStationRMS(s.id, s.rms).hex;
-
-  const circle = L.circle([lat, lon], {
-    radius: CIRCLE_RADIUS_M,
-    color:'#222',
-    weight:2,
-    fillColor: color,
-    fillOpacity:0.6
-  });
-
-  const m = L.circleMarker([lat, lon], {
-    radius:6, color:'#000', fillColor:'#000', fillOpacity:1, weight:1
-  });
-
-  const tip = L.tooltip({permanent:true, direction:'top', offset:[0,-8], className:'rmsTip'})
-               .setContent(`${s.id}<br/>RMS ${Number(s.rms||0).toFixed(1)}`);
-  m.bindTooltip(tip).openTooltip();
-
-  const group = L.layerGroup([circle, m]).addTo(stationLayer);
-  const onClick = () => loadWaveform(s.id);
-  circle.on('click', onClick); m.on('click', onClick);
-
-  return (markers[s.id] = {group, circle, marker:m, tip});
+  const circle=L.circle([s.lat,s.lon],{radius:1000,color:'#222',weight:2,fillColor:colorForNorm(s.norm),fillOpacity:0.75});
+  const dot=L.circleMarker([s.lat,s.lon],{radius:6,color:'#000',fillColor:'#000',fillOpacity:1,weight:1});
+  const tip=L.tooltip({permanent:true,direction:'top',offset:[0,-8],className:'rmsTip'})
+              .setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
+  dot.bindTooltip(tip).openTooltip();
+  const group=L.layerGroup([circle,dot]).addTo(stationLayer);
+  circle.on('click',()=>loadWaveform(s.id)); dot.on('click',()=>loadWaveform(s.id));
+  return (markers[s.id]={group,circle,dot,tip});
+}
+function upsertMarker(s){
+  const m=markers[s.id]||ensureMarker(s), ll=L.latLng(s.lat,s.lon);
+  m.circle.setLatLng(ll); m.dot.setLatLng(ll);
+  m.circle.setStyle({fillColor:colorForNorm(s.norm)});
+  m.tip.setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
 }
 
-function upsertMarker(s, lat, lon){
-  const entry = markers[s.id] || ensureMarker(s, lat, lon);
-  const ll = L.latLng(lat, lon);
-  entry.circle.setLatLng(ll);
-  entry.marker.setLatLng(ll);
-  entry.circle.setStyle({ fillColor: colorForStationRMS(s.id, s.rms).hex });
-  entry.tip.setContent(`${s.id}<br/>RMS ${Number(s.rms||0).toFixed(1)}`);
-}
-
-/* ---------------- Overlays ---------------- */
+/* ----------------------------- Legend ---------------------------- */
 (function renderLegend(){
-  const box = document.getElementById('legend');
-  let html = '<h4>RMS 30,000 → 40,000 (10 bins)</h4>';
-  for (let i=0;i<SCALE10.length;i++){
-    const lo = Math.round(RMS_MIN + i*(RMS_MAX-RMS_MIN)/BINS);
-    const hi = Math.round(RMS_MIN + (i+1)*(RMS_MAX-RMS_MIN)/BINS);
-    html += `<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span><span>${lo}–${hi}</span></div>`;
+  const box=document.getElementById('legend');
+  let html='<h4>Envelope (normalized 0–1)</h4>';
+  for(let i=0;i<SCALE10.length;i++){
+    html+=`<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span><span>${(i/BINS).toFixed(1)}–${((i+1)/BINS).toFixed(1)}</span></div>`;
   }
-  html += `<div class="note"><b style="color:${RED_OOR}">Red</b> = outside ${RMS_MIN}–${RMS_MAX}</div>`;
-  box.innerHTML = html;
+  html+=`<div class="note"><b style="color:${RED}">Red</b> = out of range / missing</div>`;
+  box.innerHTML=html;
 })();
 
 function updateBadges(stations){
-  const root = document.getElementById('badges'); root.innerHTML = '';
-  for (const s of stations){
-    const col = colorForStationRMS(s.id, s.rms).hex;
-    const span = document.createElement('span');
-    span.className = 'badge';
-    span.style.borderColor = col;
-    span.style.color = col;
-    span.textContent = `${s.id}: RMS ${s.rms != null ? s.rms.toFixed(1) : '—'}`;
-    span.onclick = () => loadWaveform(s.id);
+  const root=document.getElementById('badges'); root.innerHTML='';
+  stations.forEach(s=>{
+    const span=document.createElement('span');
+    span.className='badge';
+    span.style.borderColor=span.style.color=colorForNorm(s.norm);
+    span.textContent=`${s.id}: env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`;
+    span.onclick=()=>loadWaveform(s.id);
     root.appendChild(span);
-  }
+  });
 }
 
-document.getElementById('toggleOverlays').addEventListener('change', (e) => {
-  const on = e.target.checked;
-  document.getElementById('legend').style.display = on ? '' : 'none';
-  document.getElementById('badges').style.display = on ? '' : 'none';
-});
-
-/* ---------------- Poll /live ---------------- */
-async function poll(){
-  try {
-    const res = await fetch(LIVE_URL, {cache:'no-store'});
-    if (!res.ok) return;
-    const payload = await res.json();
-
-    let stations = Array.isArray(payload.stations) ? payload.stations : [];
-    stations = stations.map(s => ({...s, lat:Number(s.lat), lon:Number(s.lon)}))
-                       .filter(s => isNum(s.lat) && isNum(s.lon));
-
-    for (const s of stations){
-      upsertMarker(s, s.lat, s.lon);
-    }
-
-    // remove stale
-    const seen = new Set(stations.map(s => s.id));
-    Object.keys(markers).forEach(id => {
-      if (!seen.has(id)) {
-        stationLayer.removeLayer(markers[id].group);
-        delete markers[id];
-      }
-    });
-
-    if (!firstFit && stations.length){
-      const bounds = L.latLngBounds(stations.map(s => [s.lat, s.lon]));
-      if (bounds.isValid()) map.fitBounds(bounds, {padding:[30,30], maxZoom: 12});
-      firstFit = true;
-      loadWaveform(stations[0].id);
-    }
-
-    document.getElementById('pollMs').textContent = POLL_MS;
-    updateBadges(stations);
-  } catch {}
-}
-
-let pollTimer=null;
-function startPolling(){ if (pollTimer) clearInterval(pollTimer); pollTimer = setInterval(poll, POLL_MS); poll(); }
-document.getElementById('pollSelect').addEventListener('change', (e)=>{ POLL_MS = parseInt(e.target.value,10); startPolling(); });
-
-/* ---------------- Waveform (/wave) ---------------- */
-let openId=null, lastSecKey=null, wavePollBackoff=1000;
-
-async function loadWaveform(id){
-  openId = id; lastSecKey = null; wavePollBackoff = 1000;
-  await drawWave(true);
-}
+/* ---------------------------- Waveform --------------------------- */
+async function loadWaveform(id){ openId=id; await drawWave(true); }
 
 async function drawWave(force=false){
   if (!openId) return;
-  try {
-    const res = await fetch(`${WAVE_URL}?id=${encodeURIComponent(openId)}`, {cache:'no-store'});
-    if (res.status === 404) {
-      setTimeout(()=>drawWave(false), Math.min(wavePollBackoff*=1.5, 5000));
-      return;
+  const snap=lastSnapById[openId];
+  if (snap && Array.isArray(snap.band) && snap.band.length){
+    const fs=Number(snap.env_fs||5), tEnd=snap.timestamp?new Date(snap.timestamp).getTime():Date.now();
+    const mkXs = (arr)=>arr.map((_,i)=>new Date(tEnd - (arr.length-1-i)*1000/fs));
+    const bandXs=mkXs(snap.band);
+    const traces=[{x:bandXs,y:snap.band,type:'scatter',mode:'lines',name:'Band-pass (0.05–0.10 Hz)',line:{width:1.6}}];
+    if (snap.env_series?.length){
+      traces.push({x:mkXs(snap.env_series),y:snap.env_series,type:'scatter',mode:'lines',name:'Envelope',yaxis:'y2',line:{width:2}});
     }
-    if (!res.ok) return;
-
-    const data = await res.json();
-    if (!force && lastSecKey === data.sec_key) return;
-    lastSecKey = data.sec_key;
-
-    const fs = data.fs || 0;
-    const values = Array.isArray(data.values) ? data.values : [];
-    const dt = fs > 0 ? (1.0/fs) : 0.004;
-    const t0 = new Date(data.t0_iso);
-    const xs = new Array(values.length);
-    for (let i=0;i<values.length;i++) xs[i] = new Date(t0.getTime() + i*dt*1000);
-
-    Plotly.react('wave',
-      [{ x: xs, y: values, type:'scatter', mode:'lines', name: openId }],
-      {
-        paper_bgcolor:'#111', plot_bgcolor:'#111', font:{color:'#eaeaea'},
-        margin:{l:50,r:10,t:10,b:40},
-        xaxis:{title:'time', rangeslider:{visible:false}, gridcolor:'#333'},
-        yaxis:{title:'amplitude', gridcolor:'#333'},
-        uirevision:'keep'
-      },
-      {responsive:true}
-    );
-
-    wavePollBackoff = 1000;
-  } catch {}
+    Plotly.react('wave',traces,{
+      paper_bgcolor:'#111',plot_bgcolor:'#111',font:{color:'#eaeaea'},
+      margin:{l:50,r:10,t:10,b:40},
+      xaxis:{title:'time',gridcolor:'#333'},
+      yaxis:{title:'band-pass',gridcolor:'#333'},
+      yaxis2:{overlaying:'y',side:'right',title:'envelope',showgrid:false,zeroline:false},
+      legend:{orientation:'h',x:0,y:1.12},uirevision:'keep'
+    },{responsive:true});
+    return;
+  }
+  // No data yet — clear
+  Plotly.react('wave',[],{
+    paper_bgcolor:'#111',plot_bgcolor:'#111',font:{color:'#eaeaea'},
+    margin:{l:50,r:10,t:10,b:40},
+    xaxis:{title:'time',gridcolor:'#333'},
+    yaxis:{title:'band-pass',gridcolor:'#333'},uirevision:'keep'
+  },{responsive:true});
 }
 
-/* periodic check for new seconds once a waveform is open */
-setInterval(()=>drawWave(false), 1000);
+/* ----------------------------- Socket ---------------------------- */
+const socket=io();
+socket.on("station_update",(payload)=>{
+  const stations=Array.isArray(payload?.stations)?payload.stations:[];
+  stations.forEach(s=>{
+    if (!Number.isFinite(s.lat)||!Number.isFinite(s.lon)) return;
+    upsertMarker(s);
+    lastSnapById[s.id]=s;
+  });
 
-/* kick off */
-startPolling();
+  if (!firstFit && stations.length){
+    const b=L.latLngBounds(stations.map(s=>[s.lat,s.lon]));
+    if (b.isValid()) map.fitBounds(b,{padding:[30,30],maxZoom:12});
+    firstFit=true;
+    loadWaveform(stations[0].id);
+  }
+  updateBadges(stations);
+});
+setInterval(()=>drawWave(false),1000);
 </script>
 </body>
 </html>

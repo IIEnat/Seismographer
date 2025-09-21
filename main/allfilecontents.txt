@@ -1,0 +1,2428 @@
+========== START OF python\ingest.py ==========
+"""
+Ingest layer for Seismographer project.
+
+Supports:
+- SyntheticIngest: Generates fake sinusoidal data for testing (1 s bursts).
+- SeedLinkIngest: Placeholder for real SeedLink server client (to be implemented).
+- SimEasySeedLinkClient: Simulated SeedLink client producing ObsPy Traces (TEST ONLY).
+
+All ingest paths call a provided callback: on_trace(Trace).
+"""
+
+from __future__ import annotations
+import threading, time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Callable, List, Optional
+
+import numpy as np
+from obspy import Trace, UTCDateTime
+try:
+    from obspy.clients.seedlink.easyseedlink import EasySeedLinkClient  # noqa: F401
+except Exception:
+    EasySeedLinkClient = None  # keep import optional so dev envs still run
+
+OnTrace = Callable[[Trace], None]
+
+
+# ---------------- Base + Data Classes ----------------
+class IngestBase:
+    def start(self): raise NotImplementedError
+    def stop(self):  pass
+
+
+@dataclass(frozen=True)
+class Chan:
+    net: str; sta: str; loc: str; cha: str
+    lat: float; lon: float; freq: float; phase: float; amp: float = 1200.0
+
+
+# ---------------- Real SeedLink Stub ----------------
+class SeedLinkIngest(IngestBase):
+    """Placeholder for future wiring to a real SeedLink server."""
+    def __init__(self, server: str, on_trace: OnTrace):
+        self.server = server
+        self.on_trace = on_trace
+        self._t: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def start(self):
+        # TODO: implement with EasySeedLinkClient once server details are ready.
+        raise NotImplementedError("SeedLinkIngest not yet implemented")
+
+    def stop(self):
+        self._stop.set()
+        if self._t: self._t.join(timeout=1.0)
+
+
+# ---------------- Synthetic Generator (1 Hz bursts) ----------------
+class SyntheticIngest(IngestBase):
+    def __init__(self, chans: List[Chan], sps: float, on_trace: OnTrace):
+        self.chans = list(chans)
+        self.sps = float(sps)
+        self.on_trace = on_trace
+        self._stop = threading.Event()
+        self._t: Optional[threading.Thread] = None
+
+    def _loop(self):
+        n = int(self.sps)
+        while not self._stop.is_set():
+            t0 = datetime.now(timezone.utc)
+            ut = UTCDateTime(t0)
+            t = np.linspace(0, 1, n, endpoint=False)
+            for ch in self.chans:
+                w = np.sin(2*np.pi*(ch.freq*t + ch.phase)) + 0.15*np.random.randn(n)
+                data = (w * ch.amp).astype(np.int32)
+                tr = Trace(
+                    data=data,
+                )
+                tr.stats.network = ch.net
+                tr.stats.station = ch.sta
+                tr.stats.location = ch.loc
+                tr.stats.channel = ch.cha
+                tr.stats.sampling_rate = self.sps
+                tr.stats.starttime = ut
+                tr.stats.coordinates = {"latitude": ch.lat, "longitude": ch.lon}
+                self.on_trace(tr)
+            now = datetime.now(timezone.utc).timestamp()
+            time.sleep(max(0.0, 1.0 - (now - int(now))))
+
+    def start(self):
+        if self._t and self._t.is_alive(): return
+        self._stop.clear()
+        self._t = threading.Thread(target=self._loop, name="SyntheticIngest", daemon=True)
+        self._t.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._t: self._t.join(timeout=1.0)
+
+
+# ---------------- Simulated SeedLink Client (TESTING ONLY) ----------------
+class SimEasySeedLinkClient:
+    """
+    Simulates a SeedLink client producing synthetic ObsPy Trace objects.
+    Useful for testing the bandpass/envelope StationProcessor pipeline.
+    """
+    def __init__(self, host: str, port: int = 18000, fs: float = 250.0,
+                 burst_n: int = 206, burst_dt: float = 0.824):
+        self.host = host
+        self.port = port
+        self.fs = fs
+        self.burst_n = burst_n
+        self.burst_dt = burst_dt
+        self.on_data = None
+        self._sel = []
+        self._stop = False
+
+    def select_stream(self, net: str, sta: str, chan: str):
+        self._sel.append((net, sta, chan))
+
+    def run(self):
+        if self.on_data is None:
+            raise RuntimeError("Assign .on_data before calling run()")
+        t0 = UTCDateTime()
+        phase = 0.0
+        while not self._stop:
+            for net, sta, chan in self._sel:
+                # low-freq sine (~0.12 Hz) + noise
+                t = np.arange(self.burst_n) / self.fs
+                phase += 2 * np.pi * 0.12 * self.burst_dt
+                sig = 3000 * np.sin(2*np.pi*0.12*t + phase) + 500 * np.random.randn(self.burst_n)
+                sig = sig.astype(np.int32)
+                tr = Trace(sig)
+                tr.stats.network = net
+                tr.stats.station = sta
+                tr.stats.channel = chan
+                tr.stats.sampling_rate = self.fs
+                tr.stats.starttime = t0
+                self.on_data(tr)
+                t0 += self.burst_n / self.fs
+            time.sleep(self.burst_dt)
+
+    def stop(self):
+        self._stop = True
+
+
+if __name__ == "__main__":
+    def on_data(trace):
+        print(trace)
+        print(trace.data[:10])
+
+    c = SimEasySeedLinkClient("127.0.0.1", 18000)
+    c.on_data = on_data
+    c.select_stream("GG", "WAR27", "HNZ")
+    try:
+        c.run()
+    except KeyboardInterrupt:
+        c.stop()
+========== END OF python\ingest.py ==========
+
+========== START OF python\receiver.py ==========
+"""
+receiver.py  â€”  Band-pass + Envelope live processing (no RMS polling)
+
+What this provides
+------------------
+â€¢ StationProcessor
+    - 4th-order Butterworth band-pass (0.05â€“0.10 Hz) @ native fs (default 250 Hz)
+    - Hilbert envelope
+    - Downsample to ~5 Hz for UI (band + env queues)
+    - Small rolling RAW buffer @ native fs for diagnostics (/raw)
+
+â€¢ Helpers
+    - station_code_from_ip(host)   -> "WAR##"
+    - make_processors(hosts=None)  -> list[StationProcessor]
+    - start_processor_thread(proc) -> Thread (runs simulated client)
+
+This module is framework-agnostic: no Flask globals. Your app should:
+    - call p.to_json() in a Socket.IO background task and emit "station_update"
+    - call p.latest_raw() in your /raw route
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass
+from threading import Lock, Thread
+from typing import List, Optional, Tuple
+
+import numpy as np
+from obspy.core.trace import Trace
+from scipy.signal import butter, sosfilt, hilbert, sosfilt_zi
+
+# Simulated SeedLink client for local testing.
+# Swap out in production while keeping the same on_data(trace) callback.
+from python.ingest import SimEasySeedLinkClient
+
+
+# ----------------------------- Tunables ---------------------------------
+
+HOSTS       = ["192.168.0.33", "192.168.0.32", "192.168.0.27"]
+NET         = "GG"
+CHAN        = "HNZ"
+FS          = 250.0                   # native sampling rate
+BAND        = (0.05, 0.10)            # 20-second band
+TARGET_HZ   = 5.0                     # downsampled UI rate
+QSIZE       = 900                     # ~3 min @ 5 Hz
+RAW_SECONDS = 3                       # keep ~3 s of native RAW for /raw
+
+
+# ---------------------------- Data classes ------------------------------
+
+@dataclass
+class Queues:
+    band: deque[float]
+    env:  deque[float]
+
+
+# --------------------------- Core processor -----------------------------
+
+class StationProcessor:
+    """
+    Consume streaming ObsPy Trace bursts:
+      1) band-pass @ native fs
+      2) envelope (Hilbert)
+      3) downsample to ~5 Hz (phase-aware slice)
+      4) keep a small RAW buffer for /raw
+
+    Thread-safe for snapshot via self._lock.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        net: str,
+        sta: str,
+        chan: str,
+        fs: float = FS,
+        band: Tuple[float, float] = BAND,
+        qsize: int = QSIZE,
+        raw_seconds: int = RAW_SECONDS,
+    ) -> None:
+        self.host, self.net, self.sta, self.chan, self.fs = host, net, sta, chan, float(fs)
+
+        # UI series (~5 Hz) and RAW ring buffer (native fs)
+        self.q    = Queues(band=deque(maxlen=qsize), env=deque(maxlen=qsize))
+        self._raw = deque(maxlen=int(max(1.0, self.fs) * raw_seconds))
+
+        # Band-pass design (4th-order Butterworth)
+        lo, hi = band
+        wn = (max(lo, 1e-4) / (self.fs * 0.5), max(hi, 2e-4) / (self.fs * 0.5))
+        self._sos = butter(4, wn, btype="bandpass", output="sos", analog=False)
+        self._zi  = sosfilt_zi(self._sos) * 0.0
+
+        # Downsample state
+        self._ds_factor = int(round(self.fs / TARGET_HZ))  # â‰ˆ50 @ 250 Hz
+        self._ds_phase  = 0
+
+        # Stats / sync
+        self._lock = Lock()
+        self.env_min: Optional[float] = None
+        self.env_max: Optional[float] = None
+        self.timestamp: Optional[str] = None  # ISO of latest burst end
+
+    def _bandpass(self, x: np.ndarray) -> np.ndarray:
+        y, self._zi = sosfilt(self._sos, np.asarray(x, dtype=np.float64), zi=self._zi)
+        return y
+
+    def process_chunk(self, trace: Trace) -> None:
+        """Consume one ObsPy Trace burst (native fs)."""
+        data = np.asarray(trace.data, dtype=np.float64)
+        if data.size == 0:
+            return
+
+        # Keep RAW buffer (native fs)
+        self._raw.extend(map(float, data))
+
+        # Band-pass and envelope
+        bp  = self._bandpass(data)
+        env = np.abs(hilbert(bp))
+
+        # Downsample via phase-aware slice
+        N = bp.shape[0]
+        start = int(self._ds_phase % self._ds_factor)
+        sl = slice(start, None, self._ds_factor)
+        bp_ds, env_ds = bp[sl], env[sl]
+
+        if bp_ds.size:
+            with self._lock:
+                self.q.band.extend(float(v) for v in bp_ds)
+                self.q.env.extend(float(v) for v in env_ds)
+
+                if self.q.env:
+                    arr = np.fromiter(self.q.env, dtype=np.float64)
+                    self.env_min = float(arr.min())
+                    self.env_max = float(arr.max())
+
+                self.timestamp = trace.stats.endtime.isoformat()
+
+        self._ds_phase += N
+
+    # ---- snapshots ----
+
+    def to_json(self) -> dict:
+        """Thread-safe snapshot for Socket.IO 'station_update' payloads."""
+        with self._lock:
+            return {
+                "timestamp": self.timestamp,
+                "band_len": len(self.q.band),
+                "env_len":  len(self.q.env),
+                "env_min":  self.env_min,
+                "env_max":  self.env_max,
+                "band":     [round(v, 3) for v in self.q.band],
+                "env":      [round(v, 3) for v in self.q.env],
+            }
+
+    def latest_raw(self) -> Optional[dict]:
+        """Return latest RAW buffer at native fs for the /raw API."""
+        with self._lock:
+            vals = list(self._raw)
+            if not vals:
+                return None
+            return {"t0_iso": self.timestamp, "fs": float(self.fs), "values": vals}
+
+
+# ----------------------------- Client glue ------------------------------
+
+def station_code_from_ip(host: str) -> str:
+    """Turn '192.168.0.33' â†’ 'WAR33' for demo station IDs."""
+    tail = "".join([c for c in host.split(".")[-1] if c.isdigit()])[-2:]
+    return f"WAR{tail.zfill(2)}"
+
+
+def _run_client(proc: StationProcessor) -> None:
+    """Drive a (simulated) SeedLink client that calls proc.process_chunk(trace)."""
+    def on_data(trace: Trace) -> None:
+        proc.process_chunk(trace)
+
+    c = SimEasySeedLinkClient(proc.host, 18000, fs=FS)
+    c.on_data = on_data
+    c.select_stream(proc.net, proc.sta, CHAN)
+    c.run()  # blocking; run in a daemon thread
+
+
+def make_processors(hosts: Optional[List[str]] = None) -> List[StationProcessor]:
+    """Create one StationProcessor per host."""
+    hs = hosts or HOSTS
+    return [StationProcessor(h, NET, station_code_from_ip(h), CHAN) for h in hs]
+
+
+def start_processor_thread(proc: StationProcessor) -> Thread:
+    """Start a background thread for a single processor's client loop."""
+    t = Thread(target=_run_client, args=(proc,), daemon=True)
+    t.start()
+    return t
+========== END OF python\receiver.py ==========
+
+========== START OF static\css\global.css ==========
+:root { color-scheme: light dark; }
+
+/* ------ Base ------ */
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: system-ui, Segoe UI, Roboto, sans-serif;
+  background: #0b0b0b;
+  color: #eaeaea;
+}
+
+/* ------ Generic containers (main + smaller sections) ------ */
+.container { width: min(1200px, 92vw); margin-inline: auto; padding: 12px; }
+.container-main { position: relative; }
+.container-section { background:#111; border-top:1px solid #222; padding:8px 8px 0; }
+
+/* ------ Header ------ */
+header {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  background: #111; color: #fff; position: sticky; top: 0; z-index: 10010;
+}
+header h1 { font-size:18px; margin:0; font-weight:700; }
+header .sep { opacity:.35 }
+header label, header .chip { font-size:12px; color:#ddd; }
+header select { margin-left:6px; }
+
+/* ------ Layout (map + wave) ------ */
+#wrap { display:flex; flex-direction:column; height: calc(100vh - 48px); min-height: 520px; }
+#mapWrap { position:relative; flex: 0 0 60vh; min-height: 320px; margin-bottom:16px; }
+#map, #seismicMap { position:absolute; inset:0; }  /* ensure Leaflet fills */
+#waveWrap { flex: 1 1 40vh; min-height: 240px; margin-top:8px; }
+#wave { width:100%; height:100%; min-height: 230px; }
+
+/* ------ Overlays (above Leaflet controls) ------ */
+.overlay {
+  position:absolute; z-index: 10005;
+  background: rgba(255,255,255,.96);
+  border-radius: 12px; box-shadow: 0 8px 26px rgba(0,0,0,.25);
+  padding:10px 12px; color:#111;
+}
+.overlay.dark { background: rgba(20,20,20,.94); color:#eaeaea; border:1px solid #2a2a2a; }
+#legend { left:10px; bottom:10px; min-width: 170px; }
+#badges { left:10px; top:10px; display:flex; gap:6px; flex-wrap:wrap; max-width:min(92vw, 640px); }
+
+/* ------ Legend ------ */
+#legend h4 { margin:0 0 6px; font-size:13px; font-weight:700; }
+#legend .row { display:flex; align-items:center; gap:8px; margin:4px 0; font-size:12px; }
+#legend .sw { width:14px; height:14px; border-radius:3px; border:1px solid rgba(0,0,0,.25); }
+#legend .note { margin-top:6px; font-size:11px; opacity:.8 }
+
+/* ------ Tooltip above markers ------ */
+.rmsTip { background: rgba(0,0,0,.75); color:#fff; border:none; border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
+.rmsTip .leaflet-tooltip-content { margin:6px 8px; font-size:12px; line-height:1.2; }
+
+/* ------ Badges ------ */
+.badge {
+  font-size:12px; padding:4px 6px; border-radius:8px; border:1px solid #555;
+  background:rgba(35,35,35,.9); color:#eaeaea; white-space:nowrap; cursor:pointer;
+}
+
+/* ------ Chips, buttons, cards (generic UI) ------ */
+.chip { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border:1px solid #2a2a2a; border-radius:999px; background:#1a1a1a; }
+.chip--muted { opacity:.8; }
+
+.btn { display:inline-flex; align-items:center; justify-content:center; height:32px; padding:0 12px; border-radius:8px; border:1px solid #333; background:#1a1a1a; color:#eaeaea; cursor:pointer; }
+.btn:hover { filter: brightness(1.1); }
+.btn:active { transform: translateY(1px); }
+.btn--primary { background:#2563eb; border-color:#1f4fd1; color:#fff; }
+.btn--outline { background:transparent; border-color:#444; }
+.btn:disabled { opacity:.55; cursor:not-allowed; }
+
+.card { background:#141414; border:1px solid #222; border-radius:12px; padding:12px; box-shadow:0 4px 18px rgba(0,0,0,.2); }
+
+/* ------ Controls area under the map ------ */
+#controls { margin: 12px 0 0; }
+.controls-row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-bottom:.5rem; }
+.slider-container { display:flex; align-items:center; gap:.75rem; }
+.slider { width: clamp(260px, 60vw, 900px); }
+.slider-caption { min-width:80px; opacity:.9; }
+.station-select {
+  background:#111; color:#eaeaea; border:1px solid #444; border-radius:6px; padding:.35rem .5rem;
+}
+
+/* ------ Simple grid helpers ------ */
+.row { display:flex; flex-wrap:wrap; gap:12px; }
+.col { flex:1 1 0; min-width:180px; }
+
+/* ------ Text helpers ------ */
+.text-xs { font-size:12px; }
+.text-muted { opacity:.7; }
+
+/* ------ Responsive ------ */
+@media (max-width: 640px) {
+  #mapWrap { flex-basis: 56vh; }
+  #badges { max-width: 86vw; }
+}
+
+/* Concrete waveform height for Plotly */
+#wave { width: 100%; height: 360px; min-height: 320px; }
+========== END OF static\css\global.css ==========
+
+========== START OF templates\home.html ==========
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Live Seismic (Band-pass + Envelope)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/global.css') }}" />
+</head>
+<body>
+  {% include "navbar.html" %}
+  <div id="wrap">
+    <div id="mapWrap" class="container-main">
+      <div id="map"></div>
+      <div id="badges" class="overlay dark"></div>
+      <div id="legend" class="overlay dark"></div>
+    </div>
+    <div id="waveWrap" class="container-section">
+      <div id="wave"></div>
+    </div>
+  </div>
+
+<script>
+/* ------------ Color scale (normalized 0..1, 10 bins) ------------ */
+const BINS=10, RED='#ff1744';
+const SCALE10=['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'];
+const lastSnapById = {};   // id -> latest socket payload for that station
+
+const colorForNorm = v => (!Number.isFinite(v) || v<0 || v>1) ? RED : SCALE10[Math.min(BINS-1, Math.max(0, Math.floor(v*BINS)))];
+const fmt = v => Number.isFinite(v) ? v.toFixed(1) : 'â€”';
+const fmtPct = v => Number.isFinite(v) ? (v*100).toFixed(0)+'%' : 'â€”';
+
+/* ------------------------------ Map ------------------------------ */
+const map=L.map('map',{preferCanvas:true});
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'Â© OpenStreetMap'}).addTo(map);
+map.setView([-31.35,115.92],10);
+requestAnimationFrame(()=>map.invalidateSize());
+window.addEventListener('resize', ()=>map.invalidateSize());
+
+const stationLayer=L.layerGroup().addTo(map), markers={};
+let firstFit=false, openId=null;
+
+function ensureMarker(s){
+  if (markers[s.id]) return markers[s.id];
+  const circle=L.circle([s.lat,s.lon],{radius:1000,color:'#222',weight:2,fillColor:colorForNorm(s.norm),fillOpacity:0.75});
+  const dot=L.circleMarker([s.lat,s.lon],{radius:6,color:'#000',fillColor:'#000',fillOpacity:1,weight:1});
+  const tip=L.tooltip({permanent:true,direction:'top',offset:[0,-8],className:'rmsTip'})
+              .setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
+  dot.bindTooltip(tip).openTooltip();
+  const group=L.layerGroup([circle,dot]).addTo(stationLayer);
+  circle.on('click',()=>loadWaveform(s.id)); dot.on('click',()=>loadWaveform(s.id));
+  return (markers[s.id]={group,circle,dot,tip});
+}
+function upsertMarker(s){
+  const m=markers[s.id]||ensureMarker(s), ll=L.latLng(s.lat,s.lon);
+  m.circle.setLatLng(ll); m.dot.setLatLng(ll);
+  m.circle.setStyle({fillColor:colorForNorm(s.norm)});
+  m.tip.setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
+}
+
+/* ----------------------------- Legend ---------------------------- */
+(function renderLegend(){
+  const box=document.getElementById('legend');
+  let html='<h4>Envelope (normalized 0â€“1)</h4>';
+  for(let i=0;i<SCALE10.length;i++){
+    html+=`<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span><span>${(i/BINS).toFixed(1)}â€“${((i+1)/BINS).toFixed(1)}</span></div>`;
+  }
+  html+=`<div class="note"><b style="color:${RED}">Red</b> = out of range / missing</div>`;
+  box.innerHTML=html;
+})();
+
+function updateBadges(stations){
+  const root=document.getElementById('badges'); root.innerHTML='';
+  stations.forEach(s=>{
+    const span=document.createElement('span');
+    span.className='badge';
+    span.style.borderColor=span.style.color=colorForNorm(s.norm);
+    span.textContent=`${s.id}: env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`;
+    span.onclick=()=>loadWaveform(s.id);
+    root.appendChild(span);
+  });
+}
+
+/* ---------------------------- Waveform --------------------------- */
+async function loadWaveform(id){ openId=id; await drawWave(true); }
+
+async function drawWave(force=false){
+  if (!openId) return;
+  const snap=lastSnapById[openId];
+  if (snap && Array.isArray(snap.band) && snap.band.length){
+    const fs=Number(snap.env_fs||5), tEnd=snap.timestamp?new Date(snap.timestamp).getTime():Date.now();
+    const mkXs = (arr)=>arr.map((_,i)=>new Date(tEnd - (arr.length-1-i)*1000/fs));
+    const bandXs=mkXs(snap.band);
+    const traces=[{x:bandXs,y:snap.band,type:'scatter',mode:'lines',name:'Band-pass (0.05â€“0.10 Hz)',line:{width:1.6}}];
+    if (snap.env_series?.length){
+      traces.push({x:mkXs(snap.env_series),y:snap.env_series,type:'scatter',mode:'lines',name:'Envelope',yaxis:'y2',line:{width:2}});
+    }
+    Plotly.react('wave',traces,{
+      paper_bgcolor:'#111',plot_bgcolor:'#111',font:{color:'#eaeaea'},
+      margin:{l:50,r:10,t:10,b:40},
+      xaxis:{title:'time',gridcolor:'#333'},
+      yaxis:{title:'band-pass',gridcolor:'#333'},
+      yaxis2:{overlaying:'y',side:'right',title:'envelope',showgrid:false,zeroline:false},
+      legend:{orientation:'h',x:0,y:1.12},uirevision:'keep'
+    },{responsive:true});
+    return;
+  }
+  // No data yet â€” clear
+  Plotly.react('wave',[],{
+    paper_bgcolor:'#111',plot_bgcolor:'#111',font:{color:'#eaeaea'},
+    margin:{l:50,r:10,t:10,b:40},
+    xaxis:{title:'time',gridcolor:'#333'},
+    yaxis:{title:'band-pass',gridcolor:'#333'},uirevision:'keep'
+  },{responsive:true});
+}
+
+/* ----------------------------- Socket ---------------------------- */
+const socket=io();
+socket.on("station_update",(payload)=>{
+  const stations=Array.isArray(payload?.stations)?payload.stations:[];
+  stations.forEach(s=>{
+    if (!Number.isFinite(s.lat)||!Number.isFinite(s.lon)) return;
+    upsertMarker(s);
+    lastSnapById[s.id]=s;
+  });
+
+  if (!firstFit && stations.length){
+    const b=L.latLngBounds(stations.map(s=>[s.lat,s.lon]));
+    if (b.isValid()) map.fitBounds(b,{padding:[30,30],maxZoom:12});
+    firstFit=true;
+    loadWaveform(stations[0].id);
+  }
+  updateBadges(stations);
+});
+setInterval(()=>drawWave(false),1000);
+</script>
+</body>
+</html>
+========== END OF templates\home.html ==========
+
+========== START OF templates\navbar.html ==========
+<header>
+  <h1 style="margin:0;">{{ title or "Seismographer" }}</h1>
+
+  {% if active_page == 'home' %}
+    <a href="{{ url_for('playback') }}" class="chip">Go to Playback</a>
+    <span class="chip chip--muted">Click a station to view its band-pass & envelope</span>
+  {% elif active_page == 'playback' %}
+    <a href="{{ url_for('home') }}" class="chip">Go to Live</a>
+    <span class="chip chip--muted">Upload MiniSEED, then scrub the timeline</span>
+  {% else %}
+    <a href="{{ url_for('home') }}" class="chip">Live</a>
+    <a href="{{ url_for('playback') }}" class="chip">Playback</a>
+  {% endif %}
+</header>
+========== END OF templates\navbar.html ==========
+
+========== START OF templates\playback.html ==========
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Seismographer Playback</title>
+  <link rel="stylesheet" href="/static/css/global.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <style>
+    body { background:#0f0f0f; color:#eaeaea; }
+    .container { max-width: 1100px; margin: auto; padding: 1.5rem; }
+    #seismicMap { width: 100%; height: 100%; background: #1a1a1a; }
+    header { display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; margin-bottom:.75rem; }
+    .chip{display:inline-block;border:1px solid #444;border-radius:999px;padding:.25rem .6rem;font-size:.9rem}
+    .chip--muted{opacity:.75}
+    .sep{opacity:.5}
+    .overlay.dark{color:#ddd}
+  </style>
+</head>
+<body>
+
+    {% include "navbar.html" %}
+
+  <div class="container">
+
+
+    <form id="uploadForm" enctype="multipart/form-data" method="POST" style="margin:.75rem 0 1rem;">
+      <input type="file" name="seedlink_file" id="seedlink_files" accept=".mseed,.seed,.dat,.miniseed" multiple required>
+      <button id="uploadAndPlayBtn" type="submit" class="btn btn--primary">Upload & Play</button>
+    </form>
+
+    <!-- MAP -->
+    <div id="mapWrap" class="container-main">
+      <div id="seismicMap"></div>
+      <div id="badges" class="overlay dark"></div>
+      <div id="legend" class="overlay dark"></div>
+      <div id="queryResult" class="overlay dark" style="right:10px; top:10px; left:auto;"></div>
+    </div>
+
+    <!-- CONTROLS -->
+    <div id="controls">
+      <div class="controls-row">
+        <button id="playBtn" type="button" class="btn" disabled>â–¶ Play</button>
+        <button id="pauseBtn" type="button" class="btn" disabled>â¸ Pause</button>
+        <select id="stationSelect" class="station-select" hidden></select>
+        <span id="sliderLabel" class="text-xs text-muted"></span>
+      </div>
+
+      <div class="slider-container">
+        <label for="playbackSlider" class="slider-caption">Timeline:</label>
+        <input type="range" id="playbackSlider" class="slider" min="0" max="0" value="0" disabled>
+      </div>
+    </div>
+
+    <!-- WAVEFORM -->
+    <div id="waveWrap" class="container-section">
+      <div id="wave"></div>
+    </div>
+  </div>
+
+<script>
+let RMS_MIN = 30000, RMS_MAX = 40000;
+const BINS = 10;
+const RED_OOR = '#ff1744';
+const SCALE10 = ['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'];
+
+function setColorRange(minV, maxV){
+  if (Number.isFinite(minV) && Number.isFinite(maxV) && minV < maxV) {
+    RMS_MIN = minV; RMS_MAX = maxV;
+    renderLegend(); refreshMap();
+  }
+}
+function colorForRMS_10(rms){
+  if (!Number.isFinite(rms)) return RED_OOR;
+  if (rms < RMS_MIN || rms > RMS_MAX) return RED_OOR;
+  const t = (rms - RMS_MIN) / (RMS_MAX - RMS_MIN);
+  const idx = Math.min(BINS - 1, Math.max(0, Math.floor(t * BINS)));
+  return SCALE10[idx];
+}
+function fmtAWST(x){
+  const d = (x instanceof Date) ? x : new Date(x);
+  const parts = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Perth",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false
+  }).formatToParts(d).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} AWST`;
+}
+
+let uploadedFilenames=[], sliderMin=0, sliderMax=0, sliderStartISO=null, sliderEndISO=null,
+    selectedStationId=null, playTimer=null;
+const slider=document.getElementById('playbackSlider'),
+      sliderLabel=document.getElementById('sliderLabel'),
+      playBtn=document.getElementById('playBtn'),
+      pauseBtn=document.getElementById('pauseBtn'),
+      stationSelect=document.getElementById('stationSelect');
+
+document.getElementById('uploadForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const filesInput=document.getElementById('seedlink_files');
+  const formData=new FormData();
+  for (let i=0;i<filesInput.files.length;i++) formData.append('seedlink_file',filesInput.files[i]);
+  const res=await fetch('/playback',{method:'POST',body:formData});
+  const data=await res.json().catch(()=>({}));
+  if (data.status!=='uploaded'){ alert('Upload failed'); return; }
+
+  uploadedFilenames=Array.isArray(data.filenames)?data.filenames:[data.filename];
+  await initTimeline();
+
+  try {
+    const stats=await fetchJSON(`/playback_stats/${uploadedFilenames.join(',')}`);
+    const vmin=stats?.min?.value, vmax=stats?.max?.value;
+    const out=document.getElementById('queryResult');
+    if (Number.isFinite(vmin)&&Number.isFinite(vmax)&&vmax>vmin){
+      out.innerHTML=`<b>Detected Hour RMS Range</b><br/>
+        Min: ${vmin.toFixed(1)} @ <code>${stats.min.id}</code> (${fmtAWST(stats.min.iso)})<br/>
+        Max: ${vmax.toFixed(1)} @ <code>${stats.max.id}</code> (${fmtAWST(stats.max.iso)})`;
+      const ok=window.confirm(`Detected hour min/max RMS:\n\nmin = ${vmin.toFixed(1)}\nmax = ${vmax.toFixed(1)}\n\nUse this as the 10-bin color range?`);
+      if (ok) setColorRange(vmin, vmax);
+    } else { out.textContent='Could not detect min/max RMS'; }
+  } catch { document.getElementById('queryResult').textContent='Stats error'; }
+
+  await refreshMap(); await drawWave(); setPlayingState(false);
+});
+
+async function initTimeline(){
+  const res=await fetch(`/playback_timeline/${uploadedFilenames.join(',')}`,{cache:'no-store'});
+  const t=await res.json();
+  sliderStartISO=t.start_iso; sliderEndISO=t.end_iso;
+  sliderMin=0; sliderMax=Math.max(0,(t.steps??1)-1);
+  slider.min=sliderMin; slider.max=sliderMax; slider.value=sliderMin;
+  slider.disabled=false; updateSliderLabel();
+}
+slider.addEventListener('input', async ()=>{
+  updateSliderLabel(); await refreshMap(); await drawWave();
+});
+
+function updateSliderLabel(){
+  if (!sliderStartISO||!sliderEndISO){ sliderLabel.textContent=''; return; }
+  const curISO=getSliderISO(Number(slider.value));
+  sliderLabel.textContent=`${fmtAWST(sliderStartISO)} â€” ${fmtAWST(sliderEndISO)} | Current: ${fmtAWST(curISO)}`;
+}
+function getSliderISO(val){
+  const start=new Date(sliderStartISO).getTime();
+  const end=new Date(sliderEndISO).getTime();
+  const step=(end-start)/(sliderMax-sliderMin||1);
+  return new Date(start+(val-sliderMin)*step).toISOString();
+}
+
+let map=null, markers=[];
+function ensureMap(){ if(map)return;
+  map=L.map('seismicMap',{preferCanvas:true}).setView([-31.35,115.92],10);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {maxZoom:18, attribution:'Â© OpenStreetMap'}).addTo(map);
+}
+function populateStationSelect(stations){
+  if(!stations||stations.length<=1){ stationSelect.hidden=true; stationSelect.replaceChildren(); return; }
+  stationSelect.hidden=false;
+  stationSelect.replaceChildren(...stations.map(st=>{
+    const opt=document.createElement('option'); opt.value=st.id; opt.textContent=st.id; return opt;
+  }));
+  if(!selectedStationId) selectedStationId=stations[0].id;
+  stationSelect.value=selectedStationId;
+}
+
+async function refreshMap(){
+  if(!uploadedFilenames.length)return;
+  ensureMap(); markers.forEach(m=>map.removeLayer(m)); markers=[];
+  const step=Number(slider.value);
+  const data=await fetchJSON(`/playback_data/${uploadedFilenames.join(',')}/${step}`);
+  const stations=Array.isArray(data.stations)?data.stations:[];
+  if(!selectedStationId&&stations.length)selectedStationId=stations[0].id;
+  populateStationSelect(stations);
+
+  stations.forEach(st=>{
+    const col=colorForRMS_10(st.rms);
+    const m=L.circle([st.lat,st.lon],{
+      radius:1000,color:'#222',weight:2,fillColor:col,fillOpacity:0.75
+    }).addTo(map).bindPopup(
+      `<b>${st.id}</b><br>RMS: ${st.rms.toFixed(1)}<br>${fmtAWST(sliderStartISO)}`
+    );
+    m.on('click', async()=>{selectedStationId=st.id;stationSelect.value=st.id;await drawWave();});
+    markers.push(m);
+  });
+
+  const badges=document.getElementById('badges');
+  badges.innerHTML=stations.map(st=>
+    `<span class="chip" style="border-color:${colorForRMS_10(st.rms)};color:${colorForRMS_10(st.rms)}">
+      ${st.id}: <b>${st.rms.toFixed(1)}</b></span>`
+  ).join(' ');
+  renderLegend();
+}
+
+stationSelect.addEventListener('change', async()=>{
+  selectedStationId=stationSelect.value; await drawWave();
+});
+
+function renderLegend(){
+  const box=document.getElementById('legend');
+  let html=`<h4>RMS ${Math.round(RMS_MIN)} â†’ ${Math.round(RMS_MAX)} (10 bins)</h4>`;
+  for(let i=0;i<SCALE10.length;i++){
+    const lo=RMS_MIN+i*(RMS_MAX-RMS_MIN)/BINS;
+    const hi=RMS_MIN+(i+1)*(RMS_MAX-RMS_MIN)/BINS;
+    html+=`<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span>
+      <span>${lo.toFixed(1)}â€“${hi.toFixed(1)}</span></div>`;
+  }
+  html+=`<div class="note"><b style="color:${RED_OOR}">Red</b> = outside ${RMS_MIN.toFixed(1)}â€“${RMS_MAX.toFixed(1)}</div>`;
+  box.innerHTML=html;
+}
+
+async function drawWave(){
+  if(!uploadedFilenames.length||!selectedStationId)return;
+  const step=Number(slider.value);
+  const url=`/playback_wave/${uploadedFilenames.join(',')}/${step}/${encodeURIComponent(selectedStationId)}`;
+  const w=await fetchJSON(url);
+  const fs=Number(w.fs||0);
+  const values=Array.isArray(w.values)?w.values:[];
+  const t0=w.t0_iso?new Date(w.t0_iso):null;
+  if(!values.length){
+    Plotly.react('wave',[],{paper_bgcolor:'#111',plot_bgcolor:'#111',
+      margin:{l:50,r:10,t:10,b:40},xaxis:{gridcolor:'#333'},yaxis:{gridcolor:'#333'}});
+    return;
+  }
+  const dt=fs>0?1.0/fs:0.004;
+  const xs=t0?values.map((_,i)=>new Date(t0.getTime()+i*dt*1000)):values.map((_,i)=>i);
+  Plotly.react('wave',[{x:xs,y:values,type:'scatter',mode:'lines',name:selectedStationId}],
+    {paper_bgcolor:'#111',plot_bgcolor:'#111',font:{color:'#eaeaea'},
+      margin:{l:50,r:10,t:10,b:40},xaxis:{title:'time',gridcolor:'#333'},
+      yaxis:{title:'amplitude',gridcolor:'#333'},uirevision:'keep'},
+    {responsive:true});
+}
+
+function setPlayingState(isPlaying){
+  playBtn.disabled=isPlaying||slider.disabled;
+  pauseBtn.disabled=!isPlaying||slider.disabled;
+}
+async function stepOnce(){
+  const next=Math.min(Number(slider.max),Number(slider.value)+1);
+  slider.value=next; updateSliderLabel(); await refreshMap(); await drawWave();
+  if(next>=Number(slider.max)) stopPlaying();
+}
+function startPlaying(intervalMs=1000){
+  if(playTimer||slider.disabled) return;
+  setPlayingState(true); playTimer=setInterval(stepOnce,intervalMs);
+}
+function stopPlaying(){
+  if(playTimer) clearInterval(playTimer);
+  playTimer=null; setPlayingState(false);
+}
+playBtn.addEventListener('click',()=>startPlaying(1000));
+pauseBtn.addEventListener('click',stopPlaying);
+
+async function fetchJSON(url){
+  const res=await fetch(url,{cache:'no-store'});
+  if(!res.ok) throw new Error('Request failed');
+  return res.json();
+}
+</script>
+
+
+
+</body>
+</html>
+========== END OF templates\playback.html ==========
+
+========== START OF app.py ==========
+"""
+app.py â€” Minimal Flask + Socket.IO app (Band-pass live + Playback + /raw)
+
+Live (Socket.IO):
+  - Creates StationProcessors and streams 'station_update' once per second:
+      { id, lat, lon, norm, env_min/max, timestamp, band[], env[], fs_env }
+  - No RMS polling, no /live or /wave endpoints.
+
+Playback (HTTP):
+  - Upload MiniSEED, browse timeline, per-second RMS for map, waveform slices, stats.
+  - Kept concise but functionally identical.
+
+Raw export:
+  - /raw â†’ latest native-fs values per live station, for debugging/export.
+"""
+
+from __future__ import annotations
+
+import os, glob
+from collections import defaultdict
+from datetime import datetime, timezone, timedelta
+from math import ceil, floor
+from typing import Dict, List, Tuple
+
+import numpy as np
+from flask import Flask, jsonify, render_template, request
+from flask_socketio import SocketIO
+from obspy import read as obspy_read, Stream, Trace
+from werkzeug.utils import secure_filename
+
+from python.receiver import (
+    make_processors, start_processor_thread,  # live (band-pass only)
+)
+
+# --------------------------------- App ----------------------------------
+
+app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+BASE_DIR   = os.path.dirname(__file__)
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+AWST = timezone(timedelta(hours=8))  # UTC+8
+
+# Demo coords for stations (override with real values if available)
+COORDS: Dict[str, Tuple[float, float]] = {
+    "WAR27": (-31.35, 115.92),
+    "WAR32": (-31.40, 115.96),
+    "WAR33": (-31.45, 115.98),
+}
+
+# ---------------------------- Live processors ---------------------------
+
+_processors = make_processors()
+_threads    = [start_processor_thread(p) for p in _processors]
+
+def _sid(p) -> str:
+    return f"{getattr(p, 'net', 'GG')}.{p.sta}..{getattr(p, 'chan', 'HNZ')}"
+
+def _latlon(p) -> Tuple[float, float]:
+    return COORDS.get(p.sta, (-31.35, 115.92))
+
+@socketio.on("connect")
+def _on_connect():
+    # First payload will arrive from the background task
+    pass
+
+def background_sender():
+    while True:
+        stations = []
+        for p in _processors:
+            snap = p.to_json()
+            if not snap["timestamp"]:
+                continue
+
+            env_min, env_max = snap["env_min"], snap["env_max"]
+            env_last = snap["env"][-1] if snap["env_len"] else None
+            norm = None
+            if env_last is not None and env_min is not None and env_max is not None and env_max > env_min:
+                norm = (env_last - env_min) / (env_max - env_min)
+
+            stations.append({
+                "id": _sid(p),
+                "sta": p.sta,
+                "lat": _latlon(p)[0],
+                "lon": _latlon(p)[1],
+                "timestamp": snap["timestamp"],
+                "env_min": env_min,
+                "env_max": env_max,
+                "norm": norm,
+                "band": snap["band"],
+                "env_series": snap["env"],
+                "env_fs": 5.0,
+            })
+
+        socketio.emit("station_update", {"stations": stations})
+        socketio.sleep(1)
+
+# ------------------------------ Playback --------------------------------
+
+def _clear_uploads():
+    for f in glob.glob(os.path.join(UPLOAD_DIR, "*")):
+        try: os.remove(f)
+        except: pass
+
+def _read_streams_for_files(filenames: List[str]) -> Stream:
+    merged = Stream()
+    for fname in filenames:
+        path = os.path.join(UPLOAD_DIR, fname)
+        if not os.path.exists(path): continue
+        try: merged += obspy_read(path)
+        except: pass
+    return merged
+
+def _station_id(tr: Trace) -> str:
+    return f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}.{tr.stats.channel}"
+
+def _group_by_station(stream: Stream) -> Dict[str, List[Trace]]:
+    g: Dict[str, List[Trace]] = {}
+    for tr in stream:
+        g.setdefault(_station_id(tr), []).append(tr)
+    return g
+
+def _trace_coords(tr: Trace) -> Tuple[float, float]:
+    coords = getattr(tr.stats, "coordinates", None) or {}
+    lat, lon = coords.get("latitude"), coords.get("longitude")
+    if lat is None or lon is None:
+        lat, lon = getattr(tr.stats, "lat", None), getattr(tr.stats, "lon", None)
+    return (lat if lat is not None else -31.35, lon if lon is not None else 115.92)
+
+def _coords_for_traces(traces: List[Trace]) -> Tuple[float, float]:
+    for tr in traces:
+        lat, lon = _trace_coords(tr)
+        if lat is not None and lon is not None:
+            return (lat, lon)
+    return (-31.35, 115.92)
+
+def _slice_concat(traces: List[Trace], t_start, t_end):
+    """Concat all samples in [t_start, t_end) across segments (1 s windows)."""
+    chunks, best = [], None  # best defines fs and t0
+    for tr in traces:
+        try: sl = tr.slice(starttime=t_start, endtime=t_end)
+        except: continue
+        vals = np.asarray(sl.data, dtype=np.float64)
+        if not vals.size: continue
+        chunks.append(vals)
+        fs = float(getattr(tr.stats, "sampling_rate", 0.0))
+        cand = (vals.size, fs, t_start.datetime.isoformat(), vals)
+        if best is None or cand[0] > best[0]:
+            best = cand
+    if not chunks: return np.array([], dtype=np.float64), (0.0, None)
+    all_vals = np.concatenate(chunks, axis=0)
+    return all_vals, (best[1], best[2])
+
+# ------------------------------- Routes ---------------------------------
+
+@app.route("/")
+def home():
+    return render_template("home.html", title="Live Seismic Map", active_page="home")
+
+@app.route("/raw")
+def raw_dump_all():
+    """Return latest RAW slice for every live station (native fs)."""
+    out = {}
+    for p in _processors:
+        out[_sid(p)] = p.latest_raw()
+    return jsonify({"updated": datetime.now(timezone.utc).isoformat(), "stations": out})
+
+@app.route("/playback", methods=["GET", "POST"])
+def playback():
+    if request.method == "POST":
+        _clear_uploads()
+        files = request.files.getlist("seedlink_file")
+        if not files:
+            return jsonify({"status": "error", "message": "No files uploaded"}), 400
+        names = []
+        for f in files:
+            if not f or not f.filename: continue
+            name = secure_filename(f.filename)
+            try:
+                f.save(os.path.join(UPLOAD_DIR, name))
+                names.append(name)
+            except Exception as e:
+                print("Save error:", e)
+        if not names:
+            return jsonify({"status": "error", "message": "No valid filenames"}), 400
+        return jsonify({"status": "uploaded", "filenames": names})
+    return render_template("playback.html", title="Playback", active_page="playback")
+
+@app.route("/playback_timeline/<filenames>")
+def playback_timeline(filenames: str):
+    files = [f for f in filenames.split(",") if f]
+    st = _read_streams_for_files(files)
+    if len(st) == 0:
+        return jsonify({"start_iso": None, "end_iso": None, "steps": 1})
+    start = min(tr.stats.starttime for tr in st)
+    end   = max(tr.stats.endtime   for tr in st)
+    steps = int((end - start)) + 1
+    return jsonify({
+        "start_iso": start.datetime.replace(tzinfo=AWST).isoformat(),
+        "end_iso":   end.datetime.replace(tzinfo=AWST).isoformat(),
+        "steps":     steps
+    })
+
+@app.route("/playback_data/<filenames>/<int:slider>")
+def playback_data(filenames: str, slider: int):
+    files = [f for f in filenames.split(",") if f]
+    st = _read_streams_for_files(files)
+    if len(st) == 0:
+        return jsonify({"slider": slider, "stations": []})
+    t0 = min(tr.stats.starttime for tr in st)
+    t_start, t_end = t0 + slider, t0 + slider + 1
+    z_traces = [tr for tr in st if str(tr.stats.channel).endswith("Z")]
+    stations = []
+    for sid, traces in _group_by_station(z_traces).items():
+        vals, _meta = _slice_concat(traces, t_start, t_end)
+        rms = float(np.sqrt(np.mean(vals ** 2))) if vals.size else 0.0
+        lat, lon = _coords_for_traces(traces)
+        stations.append({"id": sid, "lat": lat, "lon": lon, "rms": rms})
+    return jsonify({"slider": slider, "stations": stations})
+
+@app.route("/playback_wave/<filenames>/<int:slider>/<path:station_id>")
+def playback_wave(filenames: str, slider: int, station_id: str):
+    files = [f for f in filenames.split(",") if f]
+    st = _read_streams_for_files(files)
+    if len(st) == 0:
+        return jsonify({"fs": 0, "values": [], "t0_iso": None})
+    t0 = min(tr.stats.starttime for tr in st)
+    t_start, t_end = t0 + slider, t0 + slider + 1
+    traces = [tr for tr in st if f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}.{tr.stats.channel}" == station_id]
+    if not traces:
+        return jsonify({"fs": 0, "values": [], "t0_iso": None})
+    vals, (fs, t0_iso) = _slice_concat(traces, t_start, t_end)
+    return jsonify({"fs": float(fs or 0.0), "values": vals.astype(np.float64).tolist(), "t0_iso": t0_iso})
+
+@app.route("/playback_stats/<filenames>")
+def playback_stats(filenames: str):
+    files = [f for f in filenames.split(",") if f]
+    st = _read_streams_for_files(files)
+    if len(st) == 0:
+        return jsonify({"min": None, "max": None})
+    z_traces = [tr for tr in st if str(tr.stats.channel).endswith("Z")]
+    if not z_traces:
+        return jsonify({"min": None, "max": None})
+
+    t_start = min(tr.stats.starttime for tr in z_traces)
+    t_end   = max(tr.stats.endtime   for tr in z_traces)
+    base = int(floor(t_start.timestamp))
+    n    = max(1, int(ceil(t_end.timestamp) - base))
+
+    sumsqs = defaultdict(lambda: np.zeros(n, dtype=np.float64))
+    counts = defaultdict(lambda: np.zeros(n, dtype=np.int64))
+
+    for tr in z_traces:
+        sid = f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}.{tr.stats.channel}"
+        fs  = float(getattr(tr.stats, "sampling_rate", 0.0) or 0.0)
+        if fs <= 0: continue
+        data = np.asarray(tr.data, dtype=np.float64)
+        if data.size == 0: continue
+
+        idx = np.floor((tr.stats.starttime.timestamp - base) + np.arange(data.size) / fs).astype(np.int64)
+        m = (idx >= 0) & (idx < n)
+        if not np.any(m): continue
+        idx = idx[m]; seg = data[m]; seg2 = seg * seg
+
+        sumsqs[sid] += np.bincount(idx, weights=seg2, minlength=n)
+        counts[sid] += np.bincount(idx, minlength=n)
+
+    best_min = None
+    best_max = None
+    for sid in sumsqs.keys():
+        c, s2 = counts[sid], sumsqs[sid]
+        valid = c > 0
+        if not np.any(valid): continue
+        rms = np.zeros_like(s2, dtype=np.float64)
+        rms[valid] = np.sqrt(s2[valid] / c[valid])
+        mi_idx = np.argmin(np.where(valid, rms, np.inf))
+        ma_idx = np.argmax(np.where(valid, rms, -np.inf))
+        mi_val = rms[mi_idx] if valid[mi_idx] else np.inf
+        ma_val = rms[ma_idx] if valid[ma_idx] else -np.inf
+        if best_min is None or mi_val < best_min[0]: best_min = (float(mi_val), sid, int(mi_idx))
+        if best_max is None or ma_val > best_max[0]: best_max = (float(ma_val), sid, int(ma_idx))
+
+    def pack(item):
+        if not item: return None
+        val, sid, sec_idx = item
+        iso = datetime.fromtimestamp(base + sec_idx, tz=AWST).isoformat()
+        return {"value": val, "id": sid, "iso": iso}
+
+    return jsonify({"min": pack(best_min), "max": pack(best_max)})
+
+# -------------------------------- Entrypoint -----------------------------
+
+if __name__ == "__main__":
+    socketio.start_background_task(background_sender)
+    socketio.run(app, debug=False, host="0.0.0.0", port=5000)
+========== END OF app.py ==========
+
+========== START OF python\ingest.py ==========
+"""
+Ingest layer for Seismographer project.
+
+Supports:
+- SyntheticIngest: Generates fake sinusoidal data for testing (1 s bursts).
+- SeedLinkIngest: Placeholder for real SeedLink server client (to be implemented).
+- SimEasySeedLinkClient: Simulated SeedLink client producing ObsPy Traces (TEST ONLY).
+
+All ingest paths call a provided callback: on_trace(Trace).
+"""
+
+from __future__ import annotations
+import threading, time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Callable, List, Optional
+
+import numpy as np
+from obspy import Trace, UTCDateTime
+try:
+    from obspy.clients.seedlink.easyseedlink import EasySeedLinkClient  # noqa: F401
+except Exception:
+    EasySeedLinkClient = None  # keep import optional so dev envs still run
+
+OnTrace = Callable[[Trace], None]
+
+
+# ---------------- Base + Data Classes ----------------
+class IngestBase:
+    def start(self): raise NotImplementedError
+    def stop(self):  pass
+
+
+@dataclass(frozen=True)
+class Chan:
+    net: str; sta: str; loc: str; cha: str
+    lat: float; lon: float; freq: float; phase: float; amp: float = 1200.0
+
+
+# ---------------- Real SeedLink Stub ----------------
+class SeedLinkIngest(IngestBase):
+    """Placeholder for future wiring to a real SeedLink server."""
+    def __init__(self, server: str, on_trace: OnTrace):
+        self.server = server
+        self.on_trace = on_trace
+        self._t: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def start(self):
+        # TODO: implement with EasySeedLinkClient once server details are ready.
+        raise NotImplementedError("SeedLinkIngest not yet implemented")
+
+    def stop(self):
+        self._stop.set()
+        if self._t: self._t.join(timeout=1.0)
+
+
+# ---------------- Synthetic Generator (1 Hz bursts) ----------------
+class SyntheticIngest(IngestBase):
+    def __init__(self, chans: List[Chan], sps: float, on_trace: OnTrace):
+        self.chans = list(chans)
+        self.sps = float(sps)
+        self.on_trace = on_trace
+        self._stop = threading.Event()
+        self._t: Optional[threading.Thread] = None
+
+    def _loop(self):
+        n = int(self.sps)
+        while not self._stop.is_set():
+            t0 = datetime.now(timezone.utc)
+            ut = UTCDateTime(t0)
+            t = np.linspace(0, 1, n, endpoint=False)
+            for ch in self.chans:
+                w = np.sin(2*np.pi*(ch.freq*t + ch.phase)) + 0.15*np.random.randn(n)
+                data = (w * ch.amp).astype(np.int32)
+                tr = Trace(
+                    data=data,
+                )
+                tr.stats.network = ch.net
+                tr.stats.station = ch.sta
+                tr.stats.location = ch.loc
+                tr.stats.channel = ch.cha
+                tr.stats.sampling_rate = self.sps
+                tr.stats.starttime = ut
+                tr.stats.coordinates = {"latitude": ch.lat, "longitude": ch.lon}
+                self.on_trace(tr)
+            now = datetime.now(timezone.utc).timestamp()
+            time.sleep(max(0.0, 1.0 - (now - int(now))))
+
+    def start(self):
+        if self._t and self._t.is_alive(): return
+        self._stop.clear()
+        self._t = threading.Thread(target=self._loop, name="SyntheticIngest", daemon=True)
+        self._t.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._t: self._t.join(timeout=1.0)
+
+
+# ---------------- Simulated SeedLink Client (TESTING ONLY) ----------------
+class SimEasySeedLinkClient:
+    """
+    Simulates a SeedLink client producing synthetic ObsPy Trace objects.
+    Useful for testing the bandpass/envelope StationProcessor pipeline.
+    """
+    def __init__(self, host: str, port: int = 18000, fs: float = 250.0,
+                 burst_n: int = 206, burst_dt: float = 0.824):
+        self.host = host
+        self.port = port
+        self.fs = fs
+        self.burst_n = burst_n
+        self.burst_dt = burst_dt
+        self.on_data = None
+        self._sel = []
+        self._stop = False
+
+    def select_stream(self, net: str, sta: str, chan: str):
+        self._sel.append((net, sta, chan))
+
+    def run(self):
+        if self.on_data is None:
+            raise RuntimeError("Assign .on_data before calling run()")
+        t0 = UTCDateTime()
+        phase = 0.0
+        while not self._stop:
+            for net, sta, chan in self._sel:
+                # low-freq sine (~0.12 Hz) + noise
+                t = np.arange(self.burst_n) / self.fs
+                phase += 2 * np.pi * 0.12 * self.burst_dt
+                sig = 3000 * np.sin(2*np.pi*0.12*t + phase) + 500 * np.random.randn(self.burst_n)
+                sig = sig.astype(np.int32)
+                tr = Trace(sig)
+                tr.stats.network = net
+                tr.stats.station = sta
+                tr.stats.channel = chan
+                tr.stats.sampling_rate = self.fs
+                tr.stats.starttime = t0
+                self.on_data(tr)
+                t0 += self.burst_n / self.fs
+            time.sleep(self.burst_dt)
+
+    def stop(self):
+        self._stop = True
+
+
+if __name__ == "__main__":
+    def on_data(trace):
+        print(trace)
+        print(trace.data[:10])
+
+    c = SimEasySeedLinkClient("127.0.0.1", 18000)
+    c.on_data = on_data
+    c.select_stream("GG", "WAR27", "HNZ")
+    try:
+        c.run()
+    except KeyboardInterrupt:
+        c.stop()
+========== END OF python\ingest.py ==========
+
+========== START OF python\receiver.py ==========
+"""
+receiver.py  â€”  Band-pass + Envelope live processing (no RMS polling)
+
+What this provides
+------------------
+â€¢ StationProcessor
+    - 4th-order Butterworth band-pass (0.05â€“0.10 Hz) @ native fs (default 250 Hz)
+    - Hilbert envelope
+    - Downsample to ~5 Hz for UI (band + env queues)
+    - Small rolling RAW buffer @ native fs for diagnostics (/raw)
+
+â€¢ Helpers
+    - station_code_from_ip(host)   -> "WAR##"
+    - make_processors(hosts=None)  -> list[StationProcessor]
+    - start_processor_thread(proc) -> Thread (runs simulated client)
+
+This module is framework-agnostic: no Flask globals. Your app should:
+    - call p.to_json() in a Socket.IO background task and emit "station_update"
+    - call p.latest_raw() in your /raw route
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass
+from threading import Lock, Thread
+from typing import List, Optional, Tuple
+
+import numpy as np
+from obspy.core.trace import Trace
+from scipy.signal import butter, sosfilt, hilbert, sosfilt_zi
+
+# Simulated SeedLink client for local testing.
+# Swap out in production while keeping the same on_data(trace) callback.
+from python.ingest import SimEasySeedLinkClient
+
+
+# ----------------------------- Tunables ---------------------------------
+
+HOSTS       = ["192.168.0.33", "192.168.0.32", "192.168.0.27"]
+NET         = "GG"
+CHAN        = "HNZ"
+FS          = 250.0                   # native sampling rate
+BAND        = (0.05, 0.10)            # 20-second band
+TARGET_HZ   = 5.0                     # downsampled UI rate
+QSIZE       = 900                     # ~3 min @ 5 Hz
+RAW_SECONDS = 3                       # keep ~3 s of native RAW for /raw
+
+
+# ---------------------------- Data classes ------------------------------
+
+@dataclass
+class Queues:
+    band: deque[float]
+    env:  deque[float]
+
+
+# --------------------------- Core processor -----------------------------
+
+class StationProcessor:
+    """
+    Consume streaming ObsPy Trace bursts:
+      1) band-pass @ native fs
+      2) envelope (Hilbert)
+      3) downsample to ~5 Hz (phase-aware slice)
+      4) keep a small RAW buffer for /raw
+
+    Thread-safe for snapshot via self._lock.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        net: str,
+        sta: str,
+        chan: str,
+        fs: float = FS,
+        band: Tuple[float, float] = BAND,
+        qsize: int = QSIZE,
+        raw_seconds: int = RAW_SECONDS,
+    ) -> None:
+        self.host, self.net, self.sta, self.chan, self.fs = host, net, sta, chan, float(fs)
+
+        # UI series (~5 Hz) and RAW ring buffer (native fs)
+        self.q    = Queues(band=deque(maxlen=qsize), env=deque(maxlen=qsize))
+        self._raw = deque(maxlen=int(max(1.0, self.fs) * raw_seconds))
+
+        # Band-pass design (4th-order Butterworth)
+        lo, hi = band
+        wn = (max(lo, 1e-4) / (self.fs * 0.5), max(hi, 2e-4) / (self.fs * 0.5))
+        self._sos = butter(4, wn, btype="bandpass", output="sos", analog=False)
+        self._zi  = sosfilt_zi(self._sos) * 0.0
+
+        # Downsample state
+        self._ds_factor = int(round(self.fs / TARGET_HZ))  # â‰ˆ50 @ 250 Hz
+        self._ds_phase  = 0
+
+        # Stats / sync
+        self._lock = Lock()
+        self.env_min: Optional[float] = None
+        self.env_max: Optional[float] = None
+        self.timestamp: Optional[str] = None  # ISO of latest burst end
+
+    def _bandpass(self, x: np.ndarray) -> np.ndarray:
+        y, self._zi = sosfilt(self._sos, np.asarray(x, dtype=np.float64), zi=self._zi)
+        return y
+
+    def process_chunk(self, trace: Trace) -> None:
+        """Consume one ObsPy Trace burst (native fs)."""
+        data = np.asarray(trace.data, dtype=np.float64)
+        if data.size == 0:
+            return
+
+        # Keep RAW buffer (native fs)
+        self._raw.extend(map(float, data))
+
+        # Band-pass and envelope
+        bp  = self._bandpass(data)
+        env = np.abs(hilbert(bp))
+
+        # Downsample via phase-aware slice
+        N = bp.shape[0]
+        start = int(self._ds_phase % self._ds_factor)
+        sl = slice(start, None, self._ds_factor)
+        bp_ds, env_ds = bp[sl], env[sl]
+
+        if bp_ds.size:
+            with self._lock:
+                self.q.band.extend(float(v) for v in bp_ds)
+                self.q.env.extend(float(v) for v in env_ds)
+
+                if self.q.env:
+                    arr = np.fromiter(self.q.env, dtype=np.float64)
+                    self.env_min = float(arr.min())
+                    self.env_max = float(arr.max())
+
+                self.timestamp = trace.stats.endtime.isoformat()
+
+        self._ds_phase += N
+
+    # ---- snapshots ----
+
+    def to_json(self) -> dict:
+        """Thread-safe snapshot for Socket.IO 'station_update' payloads."""
+        with self._lock:
+            return {
+                "timestamp": self.timestamp,
+                "band_len": len(self.q.band),
+                "env_len":  len(self.q.env),
+                "env_min":  self.env_min,
+                "env_max":  self.env_max,
+                "band":     [round(v, 3) for v in self.q.band],
+                "env":      [round(v, 3) for v in self.q.env],
+            }
+
+    def latest_raw(self) -> Optional[dict]:
+        """Return latest RAW buffer at native fs for the /raw API."""
+        with self._lock:
+            vals = list(self._raw)
+            if not vals:
+                return None
+            return {"t0_iso": self.timestamp, "fs": float(self.fs), "values": vals}
+
+
+# ----------------------------- Client glue ------------------------------
+
+def station_code_from_ip(host: str) -> str:
+    """Turn '192.168.0.33' â†’ 'WAR33' for demo station IDs."""
+    tail = "".join([c for c in host.split(".")[-1] if c.isdigit()])[-2:]
+    return f"WAR{tail.zfill(2)}"
+
+
+def _run_client(proc: StationProcessor) -> None:
+    """Drive a (simulated) SeedLink client that calls proc.process_chunk(trace)."""
+    def on_data(trace: Trace) -> None:
+        proc.process_chunk(trace)
+
+    c = SimEasySeedLinkClient(proc.host, 18000, fs=FS)
+    c.on_data = on_data
+    c.select_stream(proc.net, proc.sta, CHAN)
+    c.run()  # blocking; run in a daemon thread
+
+
+def make_processors(hosts: Optional[List[str]] = None) -> List[StationProcessor]:
+    """Create one StationProcessor per host."""
+    hs = hosts or HOSTS
+    return [StationProcessor(h, NET, station_code_from_ip(h), CHAN) for h in hs]
+
+
+def start_processor_thread(proc: StationProcessor) -> Thread:
+    """Start a background thread for a single processor's client loop."""
+    t = Thread(target=_run_client, args=(proc,), daemon=True)
+    t.start()
+    return t
+========== END OF python\receiver.py ==========
+
+========== START OF static\css\global.css ==========
+:root { color-scheme: light dark; }
+
+/* ------ Base ------ */
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: system-ui, Segoe UI, Roboto, sans-serif;
+  background: #0b0b0b;
+  color: #eaeaea;
+}
+
+/* ------ Generic containers (main + smaller sections) ------ */
+.container { width: min(1200px, 92vw); margin-inline: auto; padding: 12px; }
+.container-main { position: relative; }
+.container-section { background:#111; border-top:1px solid #222; padding:8px 8px 0; }
+
+/* ------ Header ------ */
+header {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  background: #111; color: #fff; position: sticky; top: 0; z-index: 10010;
+}
+header h1 { font-size:18px; margin:0; font-weight:700; }
+header .sep { opacity:.35 }
+header label, header .chip { font-size:12px; color:#ddd; }
+header select { margin-left:6px; }
+
+/* ------ Layout (map + wave) ------ */
+#wrap { display:flex; flex-direction:column; height: calc(100vh - 48px); min-height: 520px; }
+#mapWrap { position:relative; flex: 0 0 60vh; min-height: 320px; margin-bottom:16px; }
+#map, #seismicMap { position:absolute; inset:0; }  /* ensure Leaflet fills */
+#waveWrap { flex: 1 1 40vh; min-height: 240px; margin-top:8px; }
+#wave { width:100%; height:100%; min-height: 230px; }
+
+/* ------ Overlays (above Leaflet controls) ------ */
+.overlay {
+  position:absolute; z-index: 10005;
+  background: rgba(255,255,255,.96);
+  border-radius: 12px; box-shadow: 0 8px 26px rgba(0,0,0,.25);
+  padding:10px 12px; color:#111;
+}
+.overlay.dark { background: rgba(20,20,20,.94); color:#eaeaea; border:1px solid #2a2a2a; }
+#legend { left:10px; bottom:10px; min-width: 170px; }
+#badges { left:10px; top:10px; display:flex; gap:6px; flex-wrap:wrap; max-width:min(92vw, 640px); }
+
+/* ------ Legend ------ */
+#legend h4 { margin:0 0 6px; font-size:13px; font-weight:700; }
+#legend .row { display:flex; align-items:center; gap:8px; margin:4px 0; font-size:12px; }
+#legend .sw { width:14px; height:14px; border-radius:3px; border:1px solid rgba(0,0,0,.25); }
+#legend .note { margin-top:6px; font-size:11px; opacity:.8 }
+
+/* ------ Tooltip above markers ------ */
+.rmsTip { background: rgba(0,0,0,.75); color:#fff; border:none; border-radius:6px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
+.rmsTip .leaflet-tooltip-content { margin:6px 8px; font-size:12px; line-height:1.2; }
+
+/* ------ Badges ------ */
+.badge {
+  font-size:12px; padding:4px 6px; border-radius:8px; border:1px solid #555;
+  background:rgba(35,35,35,.9); color:#eaeaea; white-space:nowrap; cursor:pointer;
+}
+
+/* ------ Chips, buttons, cards (generic UI) ------ */
+.chip { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border:1px solid #2a2a2a; border-radius:999px; background:#1a1a1a; }
+.chip--muted { opacity:.8; }
+
+.btn { display:inline-flex; align-items:center; justify-content:center; height:32px; padding:0 12px; border-radius:8px; border:1px solid #333; background:#1a1a1a; color:#eaeaea; cursor:pointer; }
+.btn:hover { filter: brightness(1.1); }
+.btn:active { transform: translateY(1px); }
+.btn--primary { background:#2563eb; border-color:#1f4fd1; color:#fff; }
+.btn--outline { background:transparent; border-color:#444; }
+.btn:disabled { opacity:.55; cursor:not-allowed; }
+
+.card { background:#141414; border:1px solid #222; border-radius:12px; padding:12px; box-shadow:0 4px 18px rgba(0,0,0,.2); }
+
+/* ------ Controls area under the map ------ */
+#controls { margin: 12px 0 0; }
+.controls-row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; margin-bottom:.5rem; }
+.slider-container { display:flex; align-items:center; gap:.75rem; }
+.slider { width: clamp(260px, 60vw, 900px); }
+.slider-caption { min-width:80px; opacity:.9; }
+.station-select {
+  background:#111; color:#eaeaea; border:1px solid #444; border-radius:6px; padding:.35rem .5rem;
+}
+
+/* ------ Simple grid helpers ------ */
+.row { display:flex; flex-wrap:wrap; gap:12px; }
+.col { flex:1 1 0; min-width:180px; }
+
+/* ------ Text helpers ------ */
+.text-xs { font-size:12px; }
+.text-muted { opacity:.7; }
+
+/* ------ Responsive ------ */
+@media (max-width: 640px) {
+  #mapWrap { flex-basis: 56vh; }
+  #badges { max-width: 86vw; }
+}
+
+/* Concrete waveform height for Plotly */
+#wave { width: 100%; height: 360px; min-height: 320px; }
+========== END OF static\css\global.css ==========
+
+========== START OF templates\home.html ==========
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Live Seismic (Band-pass + Envelope)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/global.css') }}" />
+</head>
+<body>
+  {% include "navbar.html" %}
+  <div id="wrap">
+    <div id="mapWrap" class="container-main">
+      <div id="map"></div>
+      <div id="badges" class="overlay dark"></div>
+      <div id="legend" class="overlay dark"></div>
+    </div>
+    <div id="waveWrap" class="container-section">
+      <div id="wave"></div>
+    </div>
+  </div>
+
+<script>
+/* ------------ Color scale (normalized 0..1, 10 bins) ------------ */
+const BINS=10, RED='#ff1744';
+const SCALE10=['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'];
+const lastSnapById = {};   // id -> latest socket payload for that station
+
+const colorForNorm = v => (!Number.isFinite(v) || v<0 || v>1) ? RED : SCALE10[Math.min(BINS-1, Math.max(0, Math.floor(v*BINS)))];
+const fmt = v => Number.isFinite(v) ? v.toFixed(1) : 'â€”';
+const fmtPct = v => Number.isFinite(v) ? (v*100).toFixed(0)+'%' : 'â€”';
+
+/* ------------------------------ Map ------------------------------ */
+const map=L.map('map',{preferCanvas:true});
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'Â© OpenStreetMap'}).addTo(map);
+map.setView([-31.35,115.92],10);
+requestAnimationFrame(()=>map.invalidateSize());
+window.addEventListener('resize', ()=>map.invalidateSize());
+
+const stationLayer=L.layerGroup().addTo(map), markers={};
+let firstFit=false, openId=null;
+
+function ensureMarker(s){
+  if (markers[s.id]) return markers[s.id];
+  const circle=L.circle([s.lat,s.lon],{radius:1000,color:'#222',weight:2,fillColor:colorForNorm(s.norm),fillOpacity:0.75});
+  const dot=L.circleMarker([s.lat,s.lon],{radius:6,color:'#000',fillColor:'#000',fillOpacity:1,weight:1});
+  const tip=L.tooltip({permanent:true,direction:'top',offset:[0,-8],className:'rmsTip'})
+              .setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
+  dot.bindTooltip(tip).openTooltip();
+  const group=L.layerGroup([circle,dot]).addTo(stationLayer);
+  circle.on('click',()=>loadWaveform(s.id)); dot.on('click',()=>loadWaveform(s.id));
+  return (markers[s.id]={group,circle,dot,tip});
+}
+function upsertMarker(s){
+  const m=markers[s.id]||ensureMarker(s), ll=L.latLng(s.lat,s.lon);
+  m.circle.setLatLng(ll); m.dot.setLatLng(ll);
+  m.circle.setStyle({fillColor:colorForNorm(s.norm)});
+  m.tip.setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
+}
+
+/* ----------------------------- Legend ---------------------------- */
+(function renderLegend(){
+  const box=document.getElementById('legend');
+  let html='<h4>Envelope (normalized 0â€“1)</h4>';
+  for(let i=0;i<SCALE10.length;i++){
+    html+=`<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span><span>${(i/BINS).toFixed(1)}â€“${((i+1)/BINS).toFixed(1)}</span></div>`;
+  }
+  html+=`<div class="note"><b style="color:${RED}">Red</b> = out of range / missing</div>`;
+  box.innerHTML=html;
+})();
+
+function updateBadges(stations){
+  const root=document.getElementById('badges'); root.innerHTML='';
+  stations.forEach(s=>{
+    const span=document.createElement('span');
+    span.className='badge';
+    span.style.borderColor=span.style.color=colorForNorm(s.norm);
+    span.textContent=`${s.id}: env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`;
+    span.onclick=()=>loadWaveform(s.id);
+    root.appendChild(span);
+  });
+}
+
+/* ---------------------------- Waveform --------------------------- */
+async function loadWaveform(id){ openId=id; await drawWave(true); }
+
+async function drawWave(force=false){
+  if (!openId) return;
+  const snap=lastSnapById[openId];
+  if (snap && Array.isArray(snap.band) && snap.band.length){
+    const fs=Number(snap.env_fs||5), tEnd=snap.timestamp?new Date(snap.timestamp).getTime():Date.now();
+    const mkXs = (arr)=>arr.map((_,i)=>new Date(tEnd - (arr.length-1-i)*1000/fs));
+    const bandXs=mkXs(snap.band);
+    const traces=[{x:bandXs,y:snap.band,type:'scatter',mode:'lines',name:'Band-pass (0.05â€“0.10 Hz)',line:{width:1.6}}];
+    if (snap.env_series?.length){
+      traces.push({x:mkXs(snap.env_series),y:snap.env_series,type:'scatter',mode:'lines',name:'Envelope',yaxis:'y2',line:{width:2}});
+    }
+    Plotly.react('wave',traces,{
+      paper_bgcolor:'#111',plot_bgcolor:'#111',font:{color:'#eaeaea'},
+      margin:{l:50,r:10,t:10,b:40},
+      xaxis:{title:'time',gridcolor:'#333'},
+      yaxis:{title:'band-pass',gridcolor:'#333'},
+      yaxis2:{overlaying:'y',side:'right',title:'envelope',showgrid:false,zeroline:false},
+      legend:{orientation:'h',x:0,y:1.12},uirevision:'keep'
+    },{responsive:true});
+    return;
+  }
+  // No data yet â€” clear
+  Plotly.react('wave',[],{
+    paper_bgcolor:'#111',plot_bgcolor:'#111',font:{color:'#eaeaea'},
+    margin:{l:50,r:10,t:10,b:40},
+    xaxis:{title:'time',gridcolor:'#333'},
+    yaxis:{title:'band-pass',gridcolor:'#333'},uirevision:'keep'
+  },{responsive:true});
+}
+
+/* ----------------------------- Socket ---------------------------- */
+const socket=io();
+socket.on("station_update",(payload)=>{
+  const stations=Array.isArray(payload?.stations)?payload.stations:[];
+  stations.forEach(s=>{
+    if (!Number.isFinite(s.lat)||!Number.isFinite(s.lon)) return;
+    upsertMarker(s);
+    lastSnapById[s.id]=s;
+  });
+
+  if (!firstFit && stations.length){
+    const b=L.latLngBounds(stations.map(s=>[s.lat,s.lon]));
+    if (b.isValid()) map.fitBounds(b,{padding:[30,30],maxZoom:12});
+    firstFit=true;
+    loadWaveform(stations[0].id);
+  }
+  updateBadges(stations);
+});
+setInterval(()=>drawWave(false),1000);
+</script>
+</body>
+</html>
+========== END OF templates\home.html ==========
+
+========== START OF templates\navbar.html ==========
+<header>
+  <h1 style="margin:0;">{{ title or "Seismographer" }}</h1>
+
+  {% if active_page == 'home' %}
+    <a href="{{ url_for('playback') }}" class="chip">Go to Playback</a>
+    <span class="chip chip--muted">Click a station to view its band-pass & envelope</span>
+  {% elif active_page == 'playback' %}
+    <a href="{{ url_for('home') }}" class="chip">Go to Live</a>
+    <span class="chip chip--muted">Upload MiniSEED, then scrub the timeline</span>
+  {% else %}
+    <a href="{{ url_for('home') }}" class="chip">Live</a>
+    <a href="{{ url_for('playback') }}" class="chip">Playback</a>
+  {% endif %}
+</header>
+========== END OF templates\navbar.html ==========
+
+========== START OF templates\playback.html ==========
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Seismographer Playback</title>
+    <link rel="stylesheet" href="/static/css/global.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        body { background: #0f0f0f; color: #eaeaea; }
+        .container { max-width: 1100px; margin: auto; padding: 1.5rem; }
+        #seismicMap { width: 100%; height: 100%; background: #1a1a1a; }
+        header { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-bottom: .75rem; }
+        .chip { display: inline-block; border: 1px solid #444; border-radius: 999px; padding: .25rem .6rem; font-size: .9rem; }
+        .chip--muted { opacity: .75; }
+        .sep { opacity: .5; }
+        .overlay.dark { color: #ddd; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Playback</h1>
+        <a href="/" class="chip chip--link">Go to Live</a>
+        <span class="sep">|</span>
+        <span class="chip chip--muted">Upload .mseed / .miniseed to view content</span>
+    </header>
+
+    <div class="container">
+        <form id="uploadForm" enctype="multipart/form-data" method="POST" style="margin: .75rem 0 1rem;">
+            <input type="file" name="seedlink_file" id="seedlink_files" accept=".mseed,.seed,.dat,.miniseed" multiple required>
+            <button id="uploadAndPlayBtn" type="submit" class="btn btn--primary">Upload & Play</button>
+        </form>
+
+        <!-- MAP -->
+        <div id="mapWrap" class="container-main">
+            <div id="seismicMap"></div>
+            <div id="badges" class="overlay dark"></div>
+            <div id="legend" class="overlay dark"></div>
+            <div id="queryResult" class="overlay dark" style="right: 10px; top: 10px; left: auto;"></div>
+        </div>
+
+        <!-- CONTROLS -->
+        <div id="controls">
+            <div class="controls-row">
+                <button id="playBtn" type="button" class="btn" disabled>â–¶ Play</button>
+                <button id="pauseBtn" type="button" class="btn" disabled>â¸ Pause</button>
+                <select id="stationSelect" class="station-select" hidden></select>
+                <span id="sliderLabel" class="text-xs text-muted"></span>
+            </div>
+
+            <div class="slider-container">
+                <label for="playbackSlider" class="slider-caption">Timeline:</label>
+                <input type="range" id="playbackSlider" class="slider" min="0" max="0" value="0" disabled>
+            </div>
+        </div>
+
+        <!-- WAVEFORM -->
+        <div id="waveWrap" class="container-section">
+            <div id="wave"></div>
+        </div>
+    </div>
+
+    <script>
+        let RMS_MIN = 30000, RMS_MAX = 40000;
+        const BINS = 10;
+        const RED_OOR = '#ff1744';
+        const SCALE10 = ['#440154', '#482878', '#3e4a89', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'];
+
+        function setColorRange(minV, maxV) {
+            if (Number.isFinite(minV) && Number.isFinite(maxV) && minV < maxV) {
+                RMS_MIN = minV;
+                RMS_MAX = maxV;
+                renderLegend();
+                refreshMap();
+            }
+        }
+
+        function colorForRMS_10(rms) {
+            if (!Number.isFinite(rms)) return RED_OOR;
+            if (rms < RMS_MIN || rms > RMS_MAX) return RED_OOR;
+            const t = (rms - RMS_MIN) / (RMS_MAX - RMS_MIN);
+            const idx = Math.min(BINS - 1, Math.max(0, Math.floor(t * BINS)));
+            return SCALE10[idx];
+        }
+
+        function fmtAWST(x) {
+            const d = (x instanceof Date) ? x : new Date(x);
+            const parts = new Intl.DateTimeFormat("en-AU", {
+                timeZone: "Australia/Perth",
+                year: "numeric", month: "2-digit", day: "2-digit",
+                hour: "2-digit", minute: "2-digit", second: "2-digit",
+                hour12: false
+            }).formatToParts(d).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+            return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} AWST`;
+        }
+
+        let uploadedFilenames = [], sliderMin = 0, sliderMax = 0, sliderStartISO = null, sliderEndISO = null,
+            selectedStationId = null, playTimer = null;
+        const slider = document.getElementById('playbackSlider'),
+              sliderLabel = document.getElementById('sliderLabel'),
+              playBtn = document.getElementById('playBtn'),
+              pauseBtn = document.getElementById('pauseBtn'),
+              stationSelect = document.getElementById('stationSelect');
+
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const filesInput = document.getElementById('seedlink_files');
+            const formData = new FormData();
+            for (let i = 0; i < filesInput.files.length; i++) formData.append('seedlink_file', filesInput.files[i]);
+            const res = await fetch('/playback', { method: 'POST', body: formData });
+            const data = await res.json().catch(() => ({}));
+            if (data.status !== 'uploaded') { alert('Upload failed'); return; }
+
+            uploadedFilenames = Array.isArray(data.filenames) ? data.filenames : [data.filename];
+            await initTimeline();
+
+            try {
+                const stats = await fetchJSON(`/playback_stats/${uploadedFilenames.join(',')}`);
+                const vmin = stats?.min?.value, vmax = stats?.max?.value;
+                const out = document.getElementById('queryResult');
+                if (Number.isFinite(vmin) && Number.isFinite(vmax) && vmax > vmin) {
+                    out.innerHTML = `<b>Detected Hour RMS Range</b><br/>
+                        Min: ${vmin.toFixed(1)} @ <code>${stats.min.id}</code> (${fmtAWST(stats.min.iso)})<br/>
+                        Max: ${vmax.toFixed(1)} @ <code>${stats.max.id}</code> (${fmtAWST(stats.max.iso)})`;
+                    const ok = window.confirm(`Detected hour min/max RMS:\n\nmin = ${vmin.toFixed(1)}\nmax = ${vmax.toFixed(1)}\n\nUse this as the 10-bin color range?`);
+                    if (ok) setColorRange(vmin, vmax);
+                } else { out.textContent = 'Could not detect min/max RMS'; }
+            } catch { document.getElementById('queryResult').textContent = 'Stats error'; }
+
+            await refreshMap();
+            await drawWave();
+            setPlayingState(false);
+        });
+
+        async function initTimeline() {
+            const res = await fetch(`/playback_timeline/${uploadedFilenames.join(',')}`, { cache: 'no-store' });
+            const t = await res.json();
+            sliderStartISO = t.start_iso;
+            sliderEndISO = t.end_iso;
+            sliderMin = 0;
+            sliderMax = Math.max(0, (t.steps ?? 1) - 1);
+            slider.min = sliderMin;
+            slider.max = sliderMax;
+            slider.value = sliderMin;
+            slider.disabled = false;
+            updateSliderLabel();
+        }
+
+        slider.addEventListener('input', async () => {
+            updateSliderLabel();
+            await refreshMap();
+            await drawWave();
+        });
+
+        function updateSliderLabel() {
+            if (!sliderStartISO || !sliderEndISO) { sliderLabel.textContent = ''; return; }
+            const curISO = getSliderISO(Number(slider.value));
+            sliderLabel.textContent = `${fmtAWST(sliderStartISO)} â€” ${fmtAWST(sliderEndISO)} | Current: ${fmtAWST(curISO)}`;
+        }
+
+        function getSliderISO(val) {
+            const start = new Date(sliderStartISO).getTime();
+            const end = new Date(sliderEndISO).getTime();
+            const step = (end - start) / (sliderMax - sliderMin || 1);
+            return new Date(start + (val - sliderMin) * step).toISOString();
+        }
+
+        let map = null, markers = [];
+        function ensureMap() {
+            if (map) return;
+            map = L.map('seismicMap', { preferCanvas: true }).setView([-31.35, 115.92], 10);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                { maxZoom: 18, attribution: 'Â© OpenStreetMap' }).addTo(map);
+        }
+
+        function populateStationSelect(stations) {
+            if (!stations || stations.length <= 1) { stationSelect.hidden = true; stationSelect.replaceChildren(); return; }
+            stationSelect.hidden = false;
+            stationSelect.replaceChildren(...stations.map(st => {
+                const opt = document.createElement('option');
+                opt.value = st.id;
+                opt.textContent = st.id;
+                return opt;
+            }));
+            if (!selectedStationId) selectedStationId = stations[0].id;
+            stationSelect.value = selectedStationId;
+        }
+
+        async function refreshMap() {
+            if (!uploadedFilenames.length) return;
+            ensureMap();
+            markers.forEach(m => map.removeLayer(m));
+            markers = [];
+            const step = Number(slider.value);
+            const data = await fetchJSON(`/playback_data/${uploadedFilenames.join(',')}/${step}`);
+            const stations = Array.isArray(data.stations) ? data.stations : [];
+            if (!selectedStationId && stations.length) selectedStationId = stations[0].id;
+            populateStationSelect(stations);
+
+            stations.forEach(st => {
+                const col = colorForRMS_10(st.rms);
+                const m = L.circle([st.lat, st.lon], {
+                    radius: 1000, color: '#222', weight: 2, fillColor: col, fillOpacity: 0.75
+                }).addTo(map).bindPopup(
+                    `<b>${st.id}</b><br>RMS: ${st.rms.toFixed(1)}<br>${fmtAWST(sliderStartISO)}`
+                );
+                m.on('click', async () => {
+                    selectedStationId = st.id;
+                    stationSelect.value = st.id;
+                    await drawWave();
+                });
+                markers.push(m);
+            });
+
+            const badges = document.getElementById('badges');
+            badges.innerHTML = stations.map(st =>
+                `<span class="chip" style="border-color:${colorForRMS_10(st.rms)};color:${colorForRMS_10(st.rms)}">
+                    ${st.id}: <b>${st.rms.toFixed(1)}</b></span>`
+            ).join(' ');
+            renderLegend();
+        }
+
+        stationSelect.addEventListener('change', async () => {
+            selectedStationId = stationSelect.value;
+            await drawWave();
+        });
+
+        function renderLegend() {
+            const box = document.getElementById('legend');
+            let html = `<h4>RMS ${Math.round(RMS_MIN)} â†’ ${Math.round(RMS_MAX)} (10 bins)</h4>`;
+            for (let i = 0; i < SCALE10.length; i++) {
+                const lo = RMS_MIN + i * (RMS_MAX - RMS_MIN) / BINS;
+                const hi = RMS_MIN + (i + 1) * (RMS_MAX - RMS_MIN) / BINS;
+                html += `<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span>
+                    <span>${lo.toFixed(1)}â€“${hi.toFixed(1)}</span></div>`;
+            }
+            html += `<div class="note"><b style="color:${RED_OOR}">Red</b> = outside ${RMS_MIN.toFixed(1)}â€“${RMS_MAX.toFixed(1)}</div>`;
+            box.innerHTML = html;
+        }
+
+        async function drawWave() {
+            if (!uploadedFilenames.length || !selectedStationId) return;
+            const step = Number(slider.value);
+            const url = `/playback_wave/${uploadedFilenames.join(',')}/${step}/${encodeURIComponent(selectedStationId)}`;
+            const w = await fetchJSON(url);
+            const fs = Number(w.fs || 0);
+            const values = Array.isArray(w.values) ? w.values : [];
+            const t0 = w.t0_iso ? new Date(w.t0_iso) : null;
+            if (!values.length) {
+                Plotly.react('wave', [], {
+                    paper_bgcolor: '#111', plot_bgcolor: '#111',
+                    margin: { l: 50, r: 10, t: 10, b: 40 },
+                    xaxis: { gridcolor: '#333' }, yaxis: { gridcolor: '#333' }
+                });
+                return;
+            }
+            const dt = fs > 0 ? 1.0 / fs : 0.004;
+            const xs = t0 ? values.map((_, i) => new Date(t0.getTime() + i * dt * 1000)) : values.map((_, i) => i);
+            Plotly.react('wave', [{
+                x: xs,
+                y: values,
+                type: 'scatter',
+                mode: 'lines',
+                name: selectedStationId
+            }], {
+                paper_bgcolor: '#111',
+                plot_bgcolor: '#111',
+                font: { color: '#eaeaea' },
+                margin: { l: 50, r: 10, t: 10, b: 40 },
+                xaxis: { title: 'time', gridcolor: '#333' },
+                yaxis: { title: 'amplitude', gridcolor: '#333' },
+                uirevision: 'keep'
+            }, { responsive: true });
+        }
+
+        function setPlayingState(isPlaying) {
+            playBtn.disabled = isPlaying || slider.disabled;
+            pauseBtn.disabled = !isPlaying || slider.disabled;
+        }
+
+        async function stepOnce() {
+            const next = Math.min(Number(slider.max), Number(slider.value) + 1);
+            slider.value = next;
+            updateSliderLabel();
+            await refreshMap();
+            await drawWave();
+            if (next >= Number(slider.max)) stopPlaying();
+        }
+
+        function startPlaying(intervalMs = 1000) {
+            if (playTimer || slider.disabled) return;
+            setPlayingState(true);
+            playTimer = setInterval(stepOnce, intervalMs);
+        }
+
+        function stopPlaying() {
+            if (playTimer) clearInterval(playTimer);
+            playTimer = null;
+            setPlayingState(false);
+        }
+
+        playBtn.addEventListener('click', () => startPlaying(1000));
+        pauseBtn.addEventListener('click', stopPlaying);
+
+        async function fetchJSON(url) {
+            const res = await fetch(url, { cache: 'no-store' });
+            if (!res.ok) throw new Error('Request failed');
+            return res.json();
+        }
+    </script>
+</body>
+</html>
+========== END OF templates\playback.html ==========
+
+========== START OF app.py ==========
+"""
+app.py â€” Minimal Flask + Socket.IO app (Band-pass live + Playback + /raw)
+
+Live (Socket.IO):
+  - Creates StationProcessors and streams 'station_update' once per second:
+      { id, lat, lon, norm, env_min/max, timestamp, band[], env[], fs_env }
+  - No RMS polling, no /live or /wave endpoints.
+
+Playback (HTTP):
+  - Upload MiniSEED, browse timeline, per-second RMS for map, waveform slices, stats.
+  - Kept concise but functionally identical.
+
+Raw export:
+  - /raw â†’ latest native-fs values per live station, for debugging/export.
+"""
+
+from __future__ import annotations
+
+import os, glob
+from collections import defaultdict
+from datetime import datetime, timezone, timedelta
+from math import ceil, floor
+from typing import Dict, List, Tuple
+
+import numpy as np
+from flask import Flask, jsonify, render_template, request
+from flask_socketio import SocketIO
+from obspy import read as obspy_read, Stream, Trace
+from werkzeug.utils import secure_filename
+
+from python.receiver import (
+    make_processors, start_processor_thread,  # live (band-pass only)
+)
+
+# --------------------------------- App ----------------------------------
+
+app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+BASE_DIR   = os.path.dirname(__file__)
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+AWST = timezone(timedelta(hours=8))  # UTC+8
+
+# Demo coords for stations (override with real values if available)
+COORDS: Dict[str, Tuple[float, float]] = {
+    "WAR27": (-31.35, 115.92),
+    "WAR32": (-31.40, 115.96),
+    "WAR33": (-31.45, 115.98),
+}
+
+# ---------------------------- Live processors ---------------------------
+
+_processors = make_processors()
+_threads    = [start_processor_thread(p) for p in _processors]
+
+def _sid(p) -> str:
+    return f"{getattr(p, 'net', 'GG')}.{p.sta}..{getattr(p, 'chan', 'HNZ')}"
+
+def _latlon(p) -> Tuple[float, float]:
+    return COORDS.get(p.sta, (-31.35, 115.92))
+
+@socketio.on("connect")
+def _on_connect():
+    # First payload will arrive from the background task
+    pass
+
+def background_sender():
+    while True:
+        stations = []
+        for p in _processors:
+            snap = p.to_json()
+            if not snap["timestamp"]:
+                continue
+
+            env_min, env_max = snap["env_min"], snap["env_max"]
+            env_last = snap["env"][-1] if snap["env_len"] else None
+            norm = None
+            if env_last is not None and env_min is not None and env_max is not None and env_max > env_min:
+                norm = (env_last - env_min) / (env_max - env_min)
+
+            stations.append({
+                "id": _sid(p),
+                "sta": p.sta,
+                "lat": _latlon(p)[0],
+                "lon": _latlon(p)[1],
+                "timestamp": snap["timestamp"],
+                "env_min": env_min,
+                "env_max": env_max,
+                "norm": norm,
+                "band": snap["band"],
+                "env_series": snap["env"],
+                "env_fs": 5.0,
+            })
+
+        socketio.emit("station_update", {"stations": stations})
+        socketio.sleep(1)
+
+# ------------------------------ Playback --------------------------------
+
+def _clear_uploads():
+    for f in glob.glob(os.path.join(UPLOAD_DIR, "*")):
+        try: os.remove(f)
+        except: pass
+
+def _read_streams_for_files(filenames: List[str]) -> Stream:
+    merged = Stream()
+    for fname in filenames:
+        path = os.path.join(UPLOAD_DIR, fname)
+        if not os.path.exists(path): continue
+        try: merged += obspy_read(path)
+        except: pass
+    return merged
+
+def _station_id(tr: Trace) -> str:
+    return f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}.{tr.stats.channel}"
+
+def _group_by_station(stream: Stream) -> Dict[str, List[Trace]]:
+    g: Dict[str, List[Trace]] = {}
+    for tr in stream:
+        g.setdefault(_station_id(tr), []).append(tr)
+    return g
+
+def _trace_coords(tr: Trace) -> Tuple[float, float]:
+    coords = getattr(tr.stats, "coordinates", None) or {}
+    lat, lon = coords.get("latitude"), coords.get("longitude")
+    if lat is None or lon is None:
+        lat, lon = getattr(tr.stats, "lat", None), getattr(tr.stats, "lon", None)
+    return (lat if lat is not None else -31.35, lon if lon is not None else 115.92)
+
+def _coords_for_traces(traces: List[Trace]) -> Tuple[float, float]:
+    for tr in traces:
+        lat, lon = _trace_coords(tr)
+        if lat is not None and lon is not None:
+            return (lat, lon)
+    return (-31.35, 115.92)
+
+def _slice_concat(traces: List[Trace], t_start, t_end):
+    """Concat all samples in [t_start, t_end) across segments (1 s windows)."""
+    chunks, best = [], None  # best defines fs and t0
+    for tr in traces:
+        try: sl = tr.slice(starttime=t_start, endtime=t_end)
+        except: continue
+        vals = np.asarray(sl.data, dtype=np.float64)
+        if not vals.size: continue
+        chunks.append(vals)
+        fs = float(getattr(tr.stats, "sampling_rate", 0.0))
+        cand = (vals.size, fs, t_start.datetime.isoformat(), vals)
+        if best is None or cand[0] > best[0]:
+            best = cand
+    if not chunks: return np.array([], dtype=np.float64), (0.0, None)
+    all_vals = np.concatenate(chunks, axis=0)
+    return all_vals, (best[1], best[2])
+
+# ------------------------------- Routes ---------------------------------
+
+@app.route("/")
+def home():
+    return render_template("home.html", title="Live Seismic Map", active_page="home")
+
+@app.route("/raw")
+def raw_dump_all():
+    """Return latest RAW slice for every live station (native fs)."""
+    out = {}
+    for p in _processors:
+        out[_sid(p)] = p.latest_raw()
+    return jsonify({"updated": datetime.now(timezone.utc).isoformat(), "stations": out})
+
+@app.route("/playback", methods=["GET", "POST"])
+def playback():
+    if request.method == "POST":
+        _clear_uploads()
+        files = request.files.getlist("seedlink_file")
+        if not files:
+            return jsonify({"status": "error", "message": "No files uploaded"}), 400
+        names = []
+        for f in files:
+            if not f or not f.filename: continue
+            name = secure_filename(f.filename)
+            try:
+                f.save(os.path.join(UPLOAD_DIR, name))
+                names.append(name)
+            except Exception as e:
+                print("Save error:", e)
+        if not names:
+            return jsonify({"status": "error", "message": "No valid filenames"}), 400
+        return jsonify({"status": "uploaded", "filenames": names})
+    return render_template("playback.html", title="Playback", active_page="playback")
+
+@app.route("/playback_timeline/<filenames>")
+def playback_timeline(filenames: str):
+    files = [f for f in filenames.split(",") if f]
+    st = _read_streams_for_files(files)
+    if len(st) == 0:
+        return jsonify({"start_iso": None, "end_iso": None, "steps": 1})
+    start = min(tr.stats.starttime for tr in st)
+    end   = max(tr.stats.endtime   for tr in st)
+    steps = int((end - start)) + 1
+    return jsonify({
+        "start_iso": start.datetime.replace(tzinfo=AWST).isoformat(),
+        "end_iso":   end.datetime.replace(tzinfo=AWST).isoformat(),
+        "steps":     steps
+    })
+
+@app.route("/playback_data/<filenames>/<int:slider>")
+def playback_data(filenames: str, slider: int):
+    files = [f for f in filenames.split(",") if f]
+    st = _read_streams_for_files(files)
+    if len(st) == 0:
+        return jsonify({"slider": slider, "stations": []})
+    t0 = min(tr.stats.starttime for tr in st)
+    t_start, t_end = t0 + slider, t0 + slider + 1
+    z_traces = [tr for tr in st if str(tr.stats.channel).endswith("Z")]
+    stations = []
+    for sid, traces in _group_by_station(z_traces).items():
+        vals, _meta = _slice_concat(traces, t_start, t_end)
+        rms = float(np.sqrt(np.mean(vals ** 2))) if vals.size else 0.0
+        lat, lon = _coords_for_traces(traces)
+        stations.append({"id": sid, "lat": lat, "lon": lon, "rms": rms})
+    return jsonify({"slider": slider, "stations": stations})
+
+@app.route("/playback_wave/<filenames>/<int:slider>/<path:station_id>")
+def playback_wave(filenames: str, slider: int, station_id: str):
+    files = [f for f in filenames.split(",") if f]
+    st = _read_streams_for_files(files)
+    if len(st) == 0:
+        return jsonify({"fs": 0, "values": [], "t0_iso": None})
+    t0 = min(tr.stats.starttime for tr in st)
+    t_start, t_end = t0 + slider, t0 + slider + 1
+    traces = [tr for tr in st if f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}.{tr.stats.channel}" == station_id]
+    if not traces:
+        return jsonify({"fs": 0, "values": [], "t0_iso": None})
+    vals, (fs, t0_iso) = _slice_concat(traces, t_start, t_end)
+    return jsonify({"fs": float(fs or 0.0), "values": vals.astype(np.float64).tolist(), "t0_iso": t0_iso})
+
+@app.route("/playback_stats/<filenames>")
+def playback_stats(filenames: str):
+    files = [f for f in filenames.split(",") if f]
+    st = _read_streams_for_files(files)
+    if len(st) == 0:
+        return jsonify({"min": None, "max": None})
+    z_traces = [tr for tr in st if str(tr.stats.channel).endswith("Z")]
+    if not z_traces:
+        return jsonify({"min": None, "max": None})
+
+    t_start = min(tr.stats.starttime for tr in z_traces)
+    t_end   = max(tr.stats.endtime   for tr in z_traces)
+    base = int(floor(t_start.timestamp))
+    n    = max(1, int(ceil(t_end.timestamp) - base))
+
+    sumsqs = defaultdict(lambda: np.zeros(n, dtype=np.float64))
+    counts = defaultdict(lambda: np.zeros(n, dtype=np.int64))
+
+    for tr in z_traces:
+        sid = f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}.{tr.stats.channel}"
+        fs  = float(getattr(tr.stats, "sampling_rate", 0.0) or 0.0)
+        if fs <= 0: continue
+        data = np.asarray(tr.data, dtype=np.float64)
+        if data.size == 0: continue
+
+        idx = np.floor((tr.stats.starttime.timestamp - base) + np.arange(data.size) / fs).astype(np.int64)
+        m = (idx >= 0) & (idx < n)
+        if not np.any(m): continue
+        idx = idx[m]; seg = data[m]; seg2 = seg * seg
+
+        sumsqs[sid] += np.bincount(idx, weights=seg2, minlength=n)
+        counts[sid] += np.bincount(idx, minlength=n)
+
+    best_min = None
+    best_max = None
+    for sid in sumsqs.keys():
+        c, s2 = counts[sid], sumsqs[sid]
+        valid = c > 0
+        if not np.any(valid): continue
+        rms = np.zeros_like(s2, dtype=np.float64)
+        rms[valid] = np.sqrt(s2[valid] / c[valid])
+        mi_idx = np.argmin(np.where(valid, rms, np.inf))
+        ma_idx = np.argmax(np.where(valid, rms, -np.inf))
+        mi_val = rms[mi_idx] if valid[mi_idx] else np.inf
+        ma_val = rms[ma_idx] if valid[ma_idx] else -np.inf
+        if best_min is None or mi_val < best_min[0]: best_min = (float(mi_val), sid, int(mi_idx))
+        if best_max is None or ma_val > best_max[0]: best_max = (float(ma_val), sid, int(ma_idx))
+
+    def pack(item):
+        if not item: return None
+        val, sid, sec_idx = item
+        iso = datetime.fromtimestamp(base + sec_idx, tz=AWST).isoformat()
+        return {"value": val, "id": sid, "iso": iso}
+
+    return jsonify({"min": pack(best_min), "max": pack(best_max)})
+
+# -------------------------------- Entrypoint -----------------------------
+
+if __name__ == "__main__":
+    socketio.start_background_task(background_sender)
+    socketio.run(app, debug=False, host="0.0.0.0", port=5000)
+========== END OF app.py ==========
+
