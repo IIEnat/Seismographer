@@ -32,6 +32,8 @@ from python.receiver import (
     make_processors, start_processor_thread,  # live (band-pass only)
 )
 
+
+
 # --------------------------------- App ----------------------------------
 
 app = Flask(__name__)
@@ -101,6 +103,40 @@ def background_sender():
         socketio.emit("station_update", {"stations": stations})
         socketio.sleep(1)
 
+# ------------------------------- Routes ---------------------------------
+
+@app.route("/")
+def home():
+    return render_template("home.html", title="Live Seismic Map", active_page="home")
+
+@app.route("/raw")
+def raw_dump_all():
+    """Return latest RAW slice for every live station (native fs)."""
+    out = {}
+    for p in _processors:
+        out[_sid(p)] = p.latest_raw()
+    return jsonify({"updated": datetime.now(timezone.utc).isoformat(), "stations": out})
+
+@app.route("/playback", methods=["GET", "POST"])
+def playback():
+    if request.method == "POST":
+        _clear_uploads()
+        files = request.files.getlist("seedlink_file")
+        if not files:
+            return jsonify({"status": "error", "message": "No files uploaded"}), 400
+        names = []
+        for f in files:
+            if not f or not f.filename: continue
+            name = secure_filename(f.filename)
+            try:
+                f.save(os.path.join(UPLOAD_DIR, name))
+                names.append(name)
+            except Exception as e:
+                print("Save error:", e)
+        if not names:
+            return jsonify({"status": "error", "message": "No valid filenames"}), 400
+        return jsonify({"status": "uploaded", "filenames": names})
+    return render_template("playback.html", title="Playback", active_page="playback")
 
 # -------------------------------- Entrypoint -----------------------------
 
