@@ -6,12 +6,13 @@ from __future__ import annotations
 import os, glob
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
-from math import ceil, floor
+import time
+import math
 from typing import Dict, List, Tuple
 
 import numpy as np
 from flask import Flask, jsonify, render_template, request
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, emit, disconnect, join_room, leave_room
 from obspy import read as obspy_read, Stream, Trace
 from werkzeug.utils import secure_filename
 
@@ -19,7 +20,11 @@ import config as CFG
 from python.receiver import make_processors, start_processor_thread
 
 # --------------------------------- App ----------------------------------
-
+# ================== GLOBAL STARTUP TICKDOWN ==================
+# One global “buffering” period equal to your initial processing window.
+# If you run faster than real-time during dev (SPEED_FACTOR > 1), we scale it down.
+_STARTUP_DELAY = max(0, int(math.ceil(CFG.BATCH_SECONDS / max(1.0, getattr(CFG, "SPEED_FACTOR", 1.0)))))
+_STARTUP_END   = time.monotonic() + _STARTUP_DELAY
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
@@ -28,7 +33,7 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 AWST = timezone(timedelta(hours=8))  # UTC+8
-
+APP_BOOT_TS = time.time()
 # ---------------------------- Live processors ---------------------------
 
 _processors = make_processors()
@@ -42,7 +47,9 @@ def _latlon(p) -> Tuple[float, float]:
 
 @socketio.on("connect")
 def _on_connect():
-    pass
+    # When a client connects, tell *that client* how many seconds remain.
+    remaining = max(0, int(round(_STARTUP_END - time.monotonic())))
+    socketio.emit("startup_tickdown", {"delay": remaining}, to=request.sid)
 
 def background_sender():
     # UI-only countdown hint (real buffering is enforced inside StationProcessor)
@@ -67,6 +74,7 @@ def background_sender():
                 "lon": _latlon(p)[1],
                 "timestamp": snap["timestamp"],
                 "startup_seconds": STARTUP_SECONDS,  # UI-only countdown hint
+                "server_elapsed": time.time() - APP_BOOT_TS,
                 "env_min": env_min,
                 "env_max": env_max,
                 "norm": norm,
@@ -228,8 +236,8 @@ def playback_stats(filenames: str):
 
     t_start = min(tr.stats.starttime for tr in z_traces)
     t_end   = max(tr.stats.endtime   for tr in z_traces)
-    base = int(floor(t_start.timestamp))
-    n    = max(1, int(ceil(t_end.timestamp) - base))
+    base = int(math.floor(t_start.timestamp))
+    n    = max(1, int(math.ceil(t_end.timestamp) - base))
 
     sumsqs = defaultdict(lambda: np.zeros(n, dtype=np.float64))
     counts = defaultdict(lambda: np.zeros(n, dtype=np.int64))
