@@ -19,7 +19,7 @@
       <div id="map"></div>
 
       <!-- startup overlay -->
-      <div id="startupOverlay" class="overlay-startup">
+      <div id="startupOverlay" class="overlay-startup" style="display:none;">
         <div id="startupBox" class="overlay-startup__box"></div>
       </div>
     </div>
@@ -57,9 +57,6 @@
     const BINS = 10, RED = '#ff1744';
     const SCALE10 = ['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'];
 
-    // countdown defaults from server, but pure-frontend
-    const DEFAULT_STARTUP = Number('{{ STARTUP_SECONDS|default(30) }}') || 30;
-
     // FE seam handling
     const UI_FS = 5;                         // 5 Hz series from backend
     const TAIL_WINDOW_S = 40;               // redraw tail length
@@ -70,7 +67,7 @@
     const colorForNorm = v =>
       (!Number.isFinite(v) || v < 0 || v > 1)
         ? RED
-        : SCALE10[Math.min(BINS-1, Math.max(0, Math.floor(v*BINS)))];
+        : SCALE10[Math.min(BINS-1, Math.max(0, Math.floor(v*BINS)))] ;
 
     const fmt = v => Number.isFinite(v) ? v.toFixed(1) : '—';
     const fmtPct = v => Number.isFinite(v) ? (v*100).toFixed(0)+'%' : '—';
@@ -138,20 +135,19 @@
 
     function loadWaveform(id){ openId = id; document.getElementById('selectedSta').textContent = id; drawWave(true); }
 
-    // FE: recompute the last TAIL_WINDOW_S of envelope using the last 5 Hz band
+    // FE: light tail reconciliation using the last 5 Hz band peaks
     function reconcileTailFE(snap){
       if (!snap || !Array.isArray(snap.band) || !snap.band.length) return;
-      const band = snap.band.slice();                       // 5 Hz band
+      const band = snap.band.slice();
       const env  = Array.isArray(snap.env_series) ? snap.env_series.slice() : [];
       if (!env.length) return;
 
       const tailPts = Math.max(1, Math.round(TAIL_WINDOW_S * UI_FS));
       const end = env.length - 1;
-      const start = Math.max(0, end - tailPts - Math.round(3*UI_FS)); // a bit of context
+      const start = Math.max(0, end - tailPts - Math.round(3*UI_FS));
 
-      // 1) peak pick (very light) on |band|
       const ab = band.map(Math.abs);
-      const minDist = Math.max(1, Math.round(2 * UI_FS));             // ~2s separation
+      const minDist = Math.max(1, Math.round(2 * UI_FS));
       const peaks = [];
       for (let i=Math.max(1,start+1); i<end-1; i++){
         if (ab[i] >= ab[i-1] && ab[i] >= ab[i+1]){
@@ -161,22 +157,18 @@
       if (peaks[0] !== start) peaks.unshift(start);
       if (peaks[peaks.length-1] !== end) peaks.push(end);
 
-      // 2) piecewise-linear envelope through peaks (PCHIP-like but cheap/safe)
-      const envNew = env.slice(); // copy
+      const envNew = env.slice();
       for (let k=0;k<peaks.length-1;k++){
         const i0 = peaks[k],  i1 = peaks[k+1];
         const y0 = ab[i0],    y1 = ab[i1];
         const span = i1 - i0 || 1;
         for (let j=i0;j<=i1;j++){
           const t = (j - i0)/span;
-          envNew[j] = (1-t)*y0 + t*y1;   // linear interp
+          envNew[j] = (1-t)*y0 + t*y1;
         }
       }
-
-      // 3) splice back only the part we touched
       for (let i=start;i<=end;i++) env[i] = envNew[i];
-
-      snap.env_series = env;                            // replace in current snapshot
+      snap.env_series = env;
       snap._fePatchedEpoch = (snap._fePatchedEpoch||0) + 1;
     }
 
@@ -191,7 +183,6 @@
         return;
       }
 
-      // force FE reconciliation of the tail on each draw (cheap at 5 Hz)
       reconcileTailFE(snap);
 
       const fs = Number(snap.env_fs || UI_FS);
@@ -216,44 +207,41 @@
       }, {responsive:true});
     }
 
-    /* ==================== startup overlay ==================== */
-    let startupSecCfg = DEFAULT_STARTUP, startupStartMs = null, startupTargetMs = null, startupTimerId=null;
+    /* ==================== startup overlay (app-boot only) ==================== */
     const startupOverlay = document.getElementById('startupOverlay');
     const startupBox     = document.getElementById('startupBox');
 
-    function startStartupCountdown(sec){
-      startupSecCfg = Number(sec) || DEFAULT_STARTUP;
-      if (startupStartMs == null) {
-        startupStartMs  = Date.now();
-        startupTargetMs = startupStartMs + startupSecCfg*1000;
-      }
-      renderStartupBox();
-      if (startupTimerId == null) startupTimerId = setInterval(renderStartupBox, 250);
-    }
-    function renderStartupBox(){
-      const now = Date.now();
-      const remainingMs  = Math.max(0, (startupTargetMs ?? now) - now);
-      const remainingSec = Math.ceil(remainingMs / 1000);
-      startupBox.innerHTML =
-        `<b>Preparing the first ${startupSecCfg}s for accurate curves…</b><br/>
-         Display will begin automatically once ready.<br/>
-         <span class="text-muted">Remaining: ${remainingSec}s</span>`;
-      if (remainingMs <= 0) {
-        startupOverlay.style.display = 'none';
-        clearInterval(startupTimerId); startupTimerId = null;
-      }
+    function startTickdown(seconds){
+      const total = Number(seconds) || 0;
+      if (total <= 0) { startupOverlay.style.display = 'none'; return; }
+      startupOverlay.style.display = 'flex';
+      let remaining = total;
+      startupBox.innerHTML = `
+        <b>Preparing the first ${total}s for accurate curves…</b><br/>
+        Display will begin automatically once ready.<br/>
+        <span class="text-muted">Remaining: ${remaining}s</span>`;
+      const iv = setInterval(()=>{
+        remaining--;
+        if (remaining <= 0){
+          clearInterval(iv);
+          startupOverlay.style.display = 'none';
+          return;
+        }
+        startupBox.querySelector('.text-muted').textContent = `Remaining: ${remaining}s`;
+      }, 1000);
     }
 
     /* ==================== socket wiring ==================== */
     const socket = io();
+
+    // NEW: single app-boot event; no reliance on payload fields
+    socket.on("startup_tickdown", (msg)=>{
+      const sec = Number(msg?.delay);
+      startTickdown(Number.isFinite(sec) ? sec : 0);
+    });
+
     socket.on("station_update",(payload)=>{
       const stations = Array.isArray(payload?.stations) ? payload.stations : [];
-
-      // start countdown on first payload
-      if (stations.length && startupStartMs == null) {
-        const sec = Number(stations[0]?.startup_seconds);
-        startStartupCountdown(Number.isFinite(sec) ? sec : DEFAULT_STARTUP);
-      }
 
       stations.forEach(s=>{
         if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) return;
