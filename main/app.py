@@ -1,39 +1,30 @@
 """
 app.py — Minimal Flask + Socket.IO app (Band-pass live + Playback + /raw)
-
-Live (Socket.IO):
-  - Creates StationProcessors and streams 'station_update' once per second:
-      { id, lat, lon, norm, env_min/max, timestamp, band[], env[], fs_env }
-  - No RMS polling, no /live or /wave endpoints.
-
-Playback (HTTP):
-  - Upload MiniSEED, browse timeline, per-second RMS for map, waveform slices, stats.
-  - Kept concise but functionally identical.
-
-Raw export:
-  - /raw → latest native-fs values per live station, for debugging/export.
 """
-
 from __future__ import annotations
 
 import os, glob
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
-from math import ceil, floor
+import time
+import math
 from typing import Dict, List, Tuple
 
 import numpy as np
 from flask import Flask, jsonify, render_template, request
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, emit, disconnect, join_room, leave_room
 from obspy import read as obspy_read, Stream, Trace
 from werkzeug.utils import secure_filename
 
-from python.receiver import (
-    make_processors, start_processor_thread,  # live (band-pass only)
-)
+import config as CFG
+from python.receiver import make_processors, start_processor_thread
 
 # --------------------------------- App ----------------------------------
-
+# ================== GLOBAL STARTUP TICKDOWN ==================
+# One global “buffering” period equal to your initial processing window.
+# If you run faster than real-time during dev (SPEED_FACTOR > 1), we scale it down.
+_STARTUP_DELAY = max(0, int(math.ceil(CFG.BATCH_SECONDS / max(1.0, getattr(CFG, "SPEED_FACTOR", 1.0)))))
+_STARTUP_END   = time.monotonic() + _STARTUP_DELAY
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
@@ -42,14 +33,7 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 AWST = timezone(timedelta(hours=8))  # UTC+8
-
-# Demo coords for stations (override with real values if available)
-COORDS: Dict[str, Tuple[float, float]] = {
-    "WAR27": (-31.35, 115.92),
-    "WAR32": (-31.40, 115.96),
-    "WAR33": (-31.45, 115.98),
-}
-
+APP_BOOT_TS = time.time()
 # ---------------------------- Live processors ---------------------------
 
 _processors = make_processors()
@@ -59,14 +43,17 @@ def _sid(p) -> str:
     return f"{getattr(p, 'net', 'GG')}.{p.sta}..{getattr(p, 'chan', 'HNZ')}"
 
 def _latlon(p) -> Tuple[float, float]:
-    return COORDS.get(p.sta, (-31.35, 115.92))
+    return CFG.COORDS.get(p.sta, (-31.35, 115.92))
 
 @socketio.on("connect")
 def _on_connect():
-    # First payload will arrive from the background task
-    pass
+    # When a client connects, tell *that client* how many seconds remain.
+    remaining = max(0, int(round(_STARTUP_END - time.monotonic())))
+    socketio.emit("startup_tickdown", {"delay": remaining}, to=request.sid)
 
 def background_sender():
+    # UI-only countdown hint (real buffering is enforced inside StationProcessor)
+    STARTUP_SECONDS = CFG.STARTUP_SECONDS
     while True:
         stations = []
         for p in _processors:
@@ -86,18 +73,21 @@ def background_sender():
                 "lat": _latlon(p)[0],
                 "lon": _latlon(p)[1],
                 "timestamp": snap["timestamp"],
+                "startup_seconds": STARTUP_SECONDS,  # UI-only countdown hint
+                "server_elapsed": time.time() - APP_BOOT_TS,
                 "env_min": env_min,
                 "env_max": env_max,
                 "norm": norm,
                 "band": snap["band"],
                 "env_series": snap["env"],
-                "env_fs": 5.0,
+                "env_fs": CFG.TARGET_HZ,
             })
 
         socketio.emit("station_update", {"stations": stations})
         socketio.sleep(1)
 
 # ------------------------------ Playback --------------------------------
+# (unchanged, only local refactors to use CFG)
 
 def _clear_uploads():
     for f in glob.glob(os.path.join(UPLOAD_DIR, "*")):
@@ -137,8 +127,7 @@ def _coords_for_traces(traces: List[Trace]) -> Tuple[float, float]:
     return (-31.35, 115.92)
 
 def _slice_concat(traces: List[Trace], t_start, t_end):
-    """Concat all samples in [t_start, t_end) across segments (1 s windows)."""
-    chunks, best = [], None  # best defines fs and t0
+    chunks, best = [], None
     for tr in traces:
         try: sl = tr.slice(starttime=t_start, endtime=t_end)
         except: continue
@@ -157,11 +146,12 @@ def _slice_concat(traces: List[Trace], t_start, t_end):
 
 @app.route("/")
 def home():
-    return render_template("home.html", title="Live Seismic Map", active_page="home")
+    # Provide a default for the initial overlay (used only until first socket payload arrives)
+    return render_template("home.html", title="Live Seismic Map",
+                           active_page="home", startup_seconds=int(CFG.STARTUP_SECONDS))
 
 @app.route("/raw")
 def raw_dump_all():
-    """Return latest RAW slice for every live station (native fs)."""
     out = {}
     for p in _processors:
         out[_sid(p)] = p.latest_raw()
@@ -246,8 +236,8 @@ def playback_stats(filenames: str):
 
     t_start = min(tr.stats.starttime for tr in z_traces)
     t_end   = max(tr.stats.endtime   for tr in z_traces)
-    base = int(floor(t_start.timestamp))
-    n    = max(1, int(ceil(t_end.timestamp) - base))
+    base = int(math.floor(t_start.timestamp))
+    n    = max(1, int(math.ceil(t_end.timestamp) - base))
 
     sumsqs = defaultdict(lambda: np.zeros(n, dtype=np.float64))
     counts = defaultdict(lambda: np.zeros(n, dtype=np.int64))
