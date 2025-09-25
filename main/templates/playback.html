@@ -50,10 +50,16 @@
         </div>
         <div class="panel-section">
             <h3 class="panel-title">Info</h3>
+            <div class="panel-kv"><span>File(s)</span><b id="uploadedFiles">—</b></div>
+
+
             
         </div>
         <div class="panel-section">
             <h3 class="panel-title">Legend</h3>
+            <div id="legendBins"></div>
+            <div class="panel-note"><b style="color:#ff1744">Red</b> = out of range / missing</div>
+
             
         </div>
     </div>
@@ -81,10 +87,35 @@
     </div>
 
     <script>
+          const seedInput = document.getElementById('seedlink_files');
+          const uploadedFilesEl = document.getElementById('uploadedFiles');
+
+          if (seedInput && uploadedFilesEl) {
+            seedInput.addEventListener('change', () => {
+              const names = Array.from(seedInput.files).map(f => f.name);
+              uploadedFilesEl.textContent = names.length ? names.join(', ') : '—';
+            });
+          }
+
+        function renderLegend() {
+            const root = document.getElementById('legendBins');
+            root.innerHTML = '';
+            for (let i = 0; i < SCALE10.length; i++) {
+                const row = document.createElement('div');
+                row.className = 'legend-row';
+                const lo = RMS_MIN + i * (RMS_MAX - RMS_MIN) / BINS;
+                const hi = RMS_MIN + (i + 1) * (RMS_MAX - RMS_MIN) / BINS;
+                row.innerHTML = `<span class="sw" style="background:${SCALE10[i]}"></span>
+                                <span>${lo.toFixed(1)}–${hi.toFixed(1)}</span>`;
+                root.appendChild(row);
+            }
+        }
+
         let RMS_MIN = 30000, RMS_MAX = 40000;
         const BINS = 10;
         const RED_OOR = '#ff1744';
         const SCALE10 = ['#440154', '#482878', '#3e4a89', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'];
+        renderLegend()
 
         function setColorRange(minV, maxV) {
             if (Number.isFinite(minV) && Number.isFinite(maxV) && minV < maxV) {
@@ -132,6 +163,9 @@
             if (data.status !== 'uploaded') { alert('Upload failed'); return; }
 
             uploadedFilenames = Array.isArray(data.filenames) ? data.filenames : [data.filename];
+            const uploadedFilesEl = document.getElementById('uploadedFiles');
+            if (uploadedFilesEl) uploadedFilesEl.textContent = uploadedFilenames.join(', ');
+
             await initTimeline();
 
             try {
@@ -245,18 +279,6 @@
             await drawWave();
         });
 
-        function renderLegend() {
-            const box = document.getElementById('legend');
-            let html = `<h4>RMS ${Math.round(RMS_MIN)} → ${Math.round(RMS_MAX)} (10 bins)</h4>`;
-            for (let i = 0; i < SCALE10.length; i++) {
-                const lo = RMS_MIN + i * (RMS_MAX - RMS_MIN) / BINS;
-                const hi = RMS_MIN + (i + 1) * (RMS_MAX - RMS_MIN) / BINS;
-                html += `<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span>
-                    <span>${lo.toFixed(1)}–${hi.toFixed(1)}</span></div>`;
-            }
-            html += `<div class="note"><b style="color:${RED_OOR}">Red</b> = outside ${RMS_MIN.toFixed(1)}–${RMS_MAX.toFixed(1)}</div>`;
-            box.innerHTML = html;
-        }
 
         async function drawWave() {
             if (!uploadedFilenames.length || !selectedStationId) return;
