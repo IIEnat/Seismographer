@@ -1,20 +1,19 @@
-# 🌍 Seismographer - Real Time Seismic Imaging 
-Seismographer is an interactive tool that visualizes real-time seismic activity using live data feeds. Built for researchers for monitoring seismic movement, this project translates seismic signals into intuitive color-coded maps, providing a live, top-down view of ground motion as it happens.
+# Seismographer - Real Time Seismic Imaging 
+Seismographer is an interactive tool that visualises real-time seismic activity using live data feeds. Built for researchers for monitoring gravitational waves, this project translates seismic signals into intuitive color-coded maps, providing a live, top-down view of ground motion as it happens.
 
 ## Key Features 
-⚡ Real-time Data: Connects to seismic stations using SeedLink and processes streams via ObsPy.  
-🗺️ Dynamic Mapping: Visualizes ground motion on an interactive map.  
-🎨 Color-coded Intensity: Seismic intensity is rendered using color gradients for easy interpretation.  
-🔁 Live Updates: The map auto-refreshes as new seismic data arrives.  
-🔍 Customisable Views: Filter by station or time window.  
+- Real-time Data: Connects to seismometers using SeedLink and processes streams via ObsPy.  
+- Dynamic Mapping: Visualizes ground motion on an interactive map.  
+- Color-coded Intensity: Seismic intensity is rendered using color gradients for easy interpretation.  
+- Live Updates: The map auto-refreshes as new seismic data arrives.  
+- Customisable Views: Filter by station or time window.  
 
 ## Technologies Used
-A website built using Flask and typical webdev technologies
-    - Obspy, numpy, seedlink for data aggregation in Python
-    - HTML, CSS, JS for frontend
+A web-app built using Flask and typical webdev technologies:
+- Obspy, numpy, seedlink for data aggregation in Python.
+- HTML, CSS, JS for frontend.
 
-## 👥 Project Team
-
+## Project Team
 | Student Name | Student Number | GitHub Username   |
 |--------------|----------------|-------------------|
 | Raynard      | 24006703       | IIEnat            |
@@ -25,27 +24,32 @@ A website built using Flask and typical webdev technologies
 | Kathleen     | 24091081       | kathisabella      |
 
 ## Project Setup
-Install dependencies 
-*Note that requirements.txt needs to be updated
+To **install dependancies** change directory to ```/main/``` and run:
 ```
-pip install -U flask obspy numpy
+$ pip install -r requirements.txt
 ```
 
-Change directory to /main/ and run using
+To **run** the app, from the same ```/main/``` directory run:
 ```
-flask run
+$ flask run
 ```
 
 ## Project Structure
 ```
-.
-├─ app.py                         # Flask app; toggles dev vs real ingest
-├─ python/
-│  ├─ ingest.py                   # SyntheticIngest (dev) + SeedLinkIngest (real)
-│  └─ receiver.py                 # Aggregator + Flask blueprint (/live, /wave, /debug/waves)
-├─ templates/
-│  └─ home.html                   # UI (map + waveform)
-└─ static/
-   └─ css/
-      └─ global.css               # styles
+├── README.md
+├── main/
+│   ├── app.py
+│   ├── config.py
+│   ├── python/
+│   │   ├── ingest.py
+│   │   └── receiver.py
+│   ├── requirements.txt
+│   ├── static/
+│   │   └── css/
+│   │       └── global.css
+│   ├── templates/
+│   │   ├── home.html
+│   │   ├── navbar.html
+│   │   └── playback.html
+│   └── uploads/
 ```
