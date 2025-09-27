@@ -3,104 +3,62 @@
 <head>
     <meta charset="UTF-8" />
     <title>Seismographer Playback</title>
-    <link rel="stylesheet" href="/static/css/global.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
-    <style>
-        body { background: #0f0f0f; color: #eaeaea; }
-        .container { max-width: 1100px; margin: auto; padding: 1.5rem; }
-        #seismicMap { width: 100%; height: 100%; background: #1a1a1a; }
-        header { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-bottom: .75rem; }
-        .chip { display: inline-block; border: 1px solid #444; border-radius: 999px; padding: .25rem .6rem; font-size: .9rem; }
-        .chip--muted { opacity: .75; }
-        .sep { opacity: .5; }
-        .overlay.dark { color: #ddd; }
-        
-        /* Layout modifications for side panel */
-        #wrap {
-            display: grid;
-            grid-template-columns: 1fr 320px;
-            gap: 12px;
-            width: min(1200px, 92vw);
-            margin-inline: auto;
-            padding: 12px;
-            min-height: 520px;
-        }
-        
-        #mapWrap { position: relative; min-height: 340px; }
-        
-        /* Side panel styling to match home.html */
-        #sidePanel {
-            background: #111; 
-            border: 1px solid #222; 
-            border-radius: 12px; 
-            padding: 12px;
-            box-shadow: 0 4px 18px rgba(0,0,0,.2); 
-            height: 100%; 
-            overflow: auto;
-        }
-        
-        .panel-section { margin-bottom: 14px; }
-        .panel-title { font-size: 14px; margin: 0 0 8px; font-weight: 700; }
-        .panel-kv { display: flex; justify-content: space-between; font-size: 12px; margin: 4px 0; }
-        .panel-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-        .panel-note { font-size: 11px; opacity: .8; margin-top: 6px; }
-        .legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 12px; }
-        .legend-row .sw { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,.25); }
-        
-        /* Responsive */
-        @media (max-width: 800px) {
-            #wrap { grid-template-columns: 1fr; }
-            #sidePanel { height: auto; }
-        }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/global.css') }}" />
 </head>
 <body>
     <header>
         <h1>Playback</h1>
-        <a href="/" class="chip chip--link">Go to Live</a>
+        <a href="/" class="chip">Go to Live</a>
         <span class="sep">|</span>
         <span class="chip chip--muted">Upload .mseed / .miniseed to view content</span>
     </header>
 
+    <!-- Upload Form -->
     <div class="container">
         <form id="uploadForm" enctype="multipart/form-data" method="POST" style="margin: .75rem 0 1rem;">
             <input type="file" name="seedlink_file" id="seedlink_files" accept=".mseed,.seed,.dat,.miniseed" multiple required>
             <button id="uploadAndPlayBtn" type="submit" class="btn btn--primary">Upload & Play</button>
         </form>
+    </div>
 
-        <div id="wrap">
-            <!-- MAP -->
-            <div id="mapWrap" class="container-main">
-                <div id="seismicMap"></div>
-                <div id="queryResult" class="overlay dark" style="right: 10px; top: 10px; left: auto;"></div>
-            </div>
-
-            <!-- SIDE PANEL -->
-            <aside id="sidePanel">
-                <section class="panel-section">
-                    <h3 class="panel-title">Stations</h3>
-                    <div id="badgeList" class="panel-chips"></div>
-                </section>
-
-                <section class="panel-section">
-                    <h3 class="panel-title">Playback Info</h3>
-                    <div class="panel-kv"><span>Files</span><b id="fileCount">—</b></div>
-                    <div class="panel-kv"><span>Timeline</span><b id="timelineInfo">—</b></div>
-                    <div class="panel-kv"><span>Selected</span><b id="selectedStation">—</b></div>
-                    <div class="panel-kv"><span>Playing</span><b id="playingStatus">Stopped</b></div>
-                </section>
-
-                <section class="panel-section">
-                    <h3 class="panel-title">Legend (RMS)</h3>
-                    <div id="legendBins"></div>
-                    <div class="panel-note"><b style="color:#ff1744">Red</b> = out of range / missing</div>
-                </section>
-            </aside>
+    <div id="wrap" class="with-panel">
+        <!-- MAP -->
+        <div id="mapWrap" class="container-main">
+            <div id="seismicMap"></div>
+            
+            <!-- Query result overlay -->
+            <div id="queryResult" class="overlay dark" style="right: 10px; top: 10px; left: auto; display: none;"></div>
         </div>
 
-        <!-- CONTROLS -->
+        <!-- SIDE PANEL -->
+        <aside id="sidePanel">
+            <section class="panel-section">
+                <h3 class="panel-title">Stations</h3>
+                <div id="badgeList" class="panel-chips"></div>
+            </section>
+
+            <section class="panel-section">
+                <h3 class="panel-title">Playback Info</h3>
+                <div class="panel-kv"><span>Files</span><b id="fileCount">—</b></div>
+                <div class="panel-kv"><span>Timeline</span><b id="timelineInfo">—</b></div>
+                <div class="panel-kv"><span>Selected</span><b id="selectedStation">—</b></div>
+                <div class="panel-kv"><span>Playing</span><b id="playingStatus">Stopped</b></div>
+            </section>
+
+            <section class="panel-section">
+                <h3 class="panel-title">Legend (RMS 0–1)</h3>
+                <div id="legendBins"></div>
+                <div class="panel-note"><b style="color:#ff1744">Red</b> = out of range / missing</div>
+            </section>
+        </aside>
+    </div>
+
+    <!-- CONTROLS -->
+    <div class="container">
         <div id="controls">
             <div class="controls-row">
                 <button id="playBtn" type="button" class="btn" disabled>▶ Play</button>
@@ -114,11 +72,11 @@
                 <input type="range" id="playbackSlider" class="slider" min="0" max="0" value="0" disabled>
             </div>
         </div>
+    </div>
 
-        <!-- WAVEFORM -->
-        <div id="waveWrap" class="container-section">
-            <div id="wave"></div>
-        </div>
+    <!-- WAVEFORM -->
+    <div id="waveWrap" class="container-section">
+        <div id="wave"></div>
     </div>
 
     <script>
@@ -229,37 +187,38 @@
             // Prepare timeline
             await initTimeline();
 
+            // Show query result overlay
+            const q = document.getElementById('queryResult');
+            q.style.display = 'block';
+
             // ---- Verify the new station JSON shape (timestamp, band/env lengths & values) ----
             try {
                 const json = await fetchJSON(`/playback_json/${uploadedFilenames.join(',')}`);
-                const q = document.getElementById('queryResult');
                 const n = Array.isArray(json?.stations) ? json.stations.length : 0;
                 q.innerHTML = `<b>Files:</b> ${uploadedFilenames.join(', ')}<br/>
                             <b>playback_json:</b> ${n} station object(s) received`;
                 console.log('playback_json sample:', json);
             } catch (err) {
-                document.getElementById('queryResult').innerHTML =
-                'playback_json fetch failed';
+                q.innerHTML = 'playback_json fetch failed';
             }
 
             // ---- Detect hour min/max RMS to seed the color scale (optional) ----
             try {
                 const stats = await fetchJSON(`/playback_stats/${uploadedFilenames.join(',')}`);
                 const vmin = stats?.min?.value, vmax = stats?.max?.value;
-                const out = document.getElementById('queryResult');
                 if (Number.isFinite(vmin) && Number.isFinite(vmax) && vmax > vmin) {
-                out.innerHTML += `<br/><b>Detected Hour RMS Range</b><br/>
-                    Min: ${vmin.toFixed(1)} @ <code>${stats.min.id}</code> (${fmtAWST(stats.min.iso)})<br/>
-                    Max: ${vmax.toFixed(1)} @ <code>${stats.max.id}</code> (${fmtAWST(stats.max.iso)})`;
-                const ok = window.confirm(
-                    `Detected hour min/max RMS:\n\nmin = ${vmin.toFixed(1)}\nmax = ${vmax.toFixed(1)}\n\nUse this as the 10-bin color range?`
-                );
-                if (ok) setColorRange(vmin, vmax);
+                    q.innerHTML += `<br/><b>Detected Hour RMS Range</b><br/>
+                        Min: ${vmin.toFixed(1)} @ <code>${stats.min.id}</code> (${fmtAWST(stats.min.iso)})<br/>
+                        Max: ${vmax.toFixed(1)} @ <code>${stats.max.id}</code> (${fmtAWST(stats.max.iso)})`;
+                    const ok = window.confirm(
+                        `Detected hour min/max RMS:\n\nmin = ${vmin.toFixed(1)}\nmax = ${vmax.toFixed(1)}\n\nUse this as the 10-bin color range?`
+                    );
+                    if (ok) setColorRange(vmin, vmax);
                 } else {
-                out.innerHTML += '<br/>Could not detect min/max RMS';
+                    q.innerHTML += '<br/>Could not detect min/max RMS';
                 }
             } catch {
-                document.getElementById('queryResult').innerHTML += '<br/>Stats error';
+                q.innerHTML += '<br/>Stats error';
             }
 
             // Initial render
@@ -310,6 +269,8 @@
             map = L.map('seismicMap', { preferCanvas: true }).setView([-31.35, 115.92], 10);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
                 { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(map);
+            requestAnimationFrame(() => map.invalidateSize());
+            window.addEventListener('resize', () => map.invalidateSize());
         }
 
         function populateStationSelect(stations) {
@@ -340,19 +301,39 @@
 
             stations.forEach(st => {
                 const col = colorForRMS_10(st.rms);
-                const m = L.circle([st.lat, st.lon], {
+                const circle = L.circle([st.lat, st.lon], {
                     radius: 1000, color: '#222', weight: 2, fillColor: col, fillOpacity: 0.75
-                }).addTo(map).bindPopup(
-                    `<b>${st.id}</b><br>RMS: ${st.rms.toFixed(1)}<br>${fmtAWST(sliderStartISO)}`
-                );
-                m.on('click', async () => {
+                });
+                const dot = L.circleMarker([st.lat, st.lon], { 
+                    radius: 6, color: '#000', fillColor: '#000', fillOpacity: 1, weight: 1 
+                });
+                const tip = L.tooltip({ permanent: true, direction: 'top', offset: [0, -8], className: 'rmsTip' })
+                    .setContent(`${st.id}<br/>RMS ${st.rms.toFixed(1)}`);
+                dot.bindTooltip(tip).openTooltip();
+                
+                const group = L.layerGroup([circle, dot]).addTo(map);
+                
+                circle.on('click', async () => {
                     selectedStationId = st.id;
                     stationSelect.value = st.id;
                     document.getElementById('selectedStation').textContent = st.id;
                     await drawWave();
                 });
-                markers.push(m);
+                dot.on('click', async () => {
+                    selectedStationId = st.id;
+                    stationSelect.value = st.id;
+                    document.getElementById('selectedStation').textContent = st.id;
+                    await drawWave();
+                });
+                markers.push(group);
             });
+
+            // Fit bounds on first load if not already done
+            if (stations.length && !map._fitBoundsDone) {
+                const bounds = L.latLngBounds(stations.map(s => [s.lat, s.lon]));
+                if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 12 });
+                map._fitBoundsDone = true;
+            }
         }
 
         stationSelect.addEventListener('change', async () => {
@@ -362,23 +343,34 @@
         });
 
         async function drawWave() {
-            if (!uploadedFilenames.length || !selectedStationId) return;
+            if (!uploadedFilenames.length || !selectedStationId) {
+                Plotly.react('wave', [], {
+                    paper_bgcolor: '#111', plot_bgcolor: '#111', font: { color: '#eaeaea' },
+                    margin: { l: 50, r: 10, t: 10, b: 40 },
+                    xaxis: { gridcolor: '#333' }, yaxis: { gridcolor: '#333' }
+                }, { responsive: true });
+                return;
+            }
+            
             const step = Number(slider.value);
             const url = `/playback_wave/${uploadedFilenames.join(',')}/${step}/${encodeURIComponent(selectedStationId)}`;
             const w = await fetchJSON(url);
             const fs = Number(w.fs || 0);
             const values = Array.isArray(w.values) ? w.values : [];
             const t0 = w.t0_iso ? new Date(w.t0_iso) : null;
+            
             if (!values.length) {
                 Plotly.react('wave', [], {
-                    paper_bgcolor: '#111', plot_bgcolor: '#111',
+                    paper_bgcolor: '#111', plot_bgcolor: '#111', font: { color: '#eaeaea' },
                     margin: { l: 50, r: 10, t: 10, b: 40 },
                     xaxis: { gridcolor: '#333' }, yaxis: { gridcolor: '#333' }
-                });
+                }, { responsive: true });
                 return;
             }
+            
             const dt = fs > 0 ? 1.0 / fs : 0.004;
             const xs = t0 ? values.map((_, i) => new Date(t0.getTime() + i * dt * 1000)) : values.map((_, i) => i);
+            
             Plotly.react('wave', [{
                 x: xs,
                 y: values,
