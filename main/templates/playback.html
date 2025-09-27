@@ -16,6 +16,44 @@
         .chip--muted { opacity: .75; }
         .sep { opacity: .5; }
         .overlay.dark { color: #ddd; }
+        
+        /* Layout modifications for side panel */
+        #wrap {
+            display: grid;
+            grid-template-columns: 1fr 320px;
+            gap: 12px;
+            width: min(1200px, 92vw);
+            margin-inline: auto;
+            padding: 12px;
+            min-height: 520px;
+        }
+        
+        #mapWrap { position: relative; min-height: 340px; }
+        
+        /* Side panel styling to match home.html */
+        #sidePanel {
+            background: #111; 
+            border: 1px solid #222; 
+            border-radius: 12px; 
+            padding: 12px;
+            box-shadow: 0 4px 18px rgba(0,0,0,.2); 
+            height: 100%; 
+            overflow: auto;
+        }
+        
+        .panel-section { margin-bottom: 14px; }
+        .panel-title { font-size: 14px; margin: 0 0 8px; font-weight: 700; }
+        .panel-kv { display: flex; justify-content: space-between; font-size: 12px; margin: 4px 0; }
+        .panel-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        .panel-note { font-size: 11px; opacity: .8; margin-top: 6px; }
+        .legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 12px; }
+        .legend-row .sw { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,.25); }
+        
+        /* Responsive */
+        @media (max-width: 800px) {
+            #wrap { grid-template-columns: 1fr; }
+            #sidePanel { height: auto; }
+        }
     </style>
 </head>
 <body>
@@ -32,12 +70,34 @@
             <button id="uploadAndPlayBtn" type="submit" class="btn btn--primary">Upload & Play</button>
         </form>
 
-        <!-- MAP -->
-        <div id="mapWrap" class="container-main">
-            <div id="seismicMap"></div>
-            <div id="badges" class="overlay dark"></div>
-            <div id="legend" class="overlay dark"></div>
-            <div id="queryResult" class="overlay dark" style="right: 10px; top: 10px; left: auto;"></div>
+        <div id="wrap">
+            <!-- MAP -->
+            <div id="mapWrap" class="container-main">
+                <div id="seismicMap"></div>
+                <div id="queryResult" class="overlay dark" style="right: 10px; top: 10px; left: auto;"></div>
+            </div>
+
+            <!-- SIDE PANEL -->
+            <aside id="sidePanel">
+                <section class="panel-section">
+                    <h3 class="panel-title">Stations</h3>
+                    <div id="badgeList" class="panel-chips"></div>
+                </section>
+
+                <section class="panel-section">
+                    <h3 class="panel-title">Playback Info</h3>
+                    <div class="panel-kv"><span>Files</span><b id="fileCount">—</b></div>
+                    <div class="panel-kv"><span>Timeline</span><b id="timelineInfo">—</b></div>
+                    <div class="panel-kv"><span>Selected</span><b id="selectedStation">—</b></div>
+                    <div class="panel-kv"><span>Playing</span><b id="playingStatus">Stopped</b></div>
+                </section>
+
+                <section class="panel-section">
+                    <h3 class="panel-title">Legend (RMS)</h3>
+                    <div id="legendBins"></div>
+                    <div class="panel-note"><b style="color:#ff1744">Red</b> = out of range / missing</div>
+                </section>
+            </aside>
         </div>
 
         <!-- CONTROLS -->
@@ -103,8 +163,53 @@
               pauseBtn = document.getElementById('pauseBtn'),
               stationSelect = document.getElementById('stationSelect');
 
+        // Initialize legend
+        function renderLegend() {
+            const root = document.getElementById('legendBins');
+            root.innerHTML = '';
+            for (let i = 0; i < SCALE10.length; i++) {
+                const row = document.createElement('div');
+                row.className = 'legend-row';
+                const lo = RMS_MIN + i * (RMS_MAX - RMS_MIN) / BINS;
+                const hi = RMS_MIN + (i + 1) * (RMS_MAX - RMS_MIN) / BINS;
+                row.innerHTML = `<span class="sw" style="background:${SCALE10[i]}"></span>
+                                <span>${lo.toFixed(1)}–${hi.toFixed(1)}</span>`;
+                root.appendChild(row);
+            }
+        }
+
+        function updateBadges(stations) {
+            const wrap = document.getElementById('badgeList');
+            wrap.innerHTML = '';
+            stations.forEach(s => {
+                const chip = document.createElement('button');
+                chip.className = 'chip';
+                const c = colorForRMS_10(s.rms);
+                chip.style.borderColor = chip.style.color = c;
+                chip.textContent = `${s.id} — ${s.rms.toFixed(1)}`;
+                chip.onclick = () => {
+                    selectedStationId = s.id;
+                    stationSelect.value = s.id;
+                    document.getElementById('selectedStation').textContent = s.id;
+                    drawWave();
+                };
+                wrap.appendChild(chip);
+            });
+        }
+
+        function updateSidePanelInfo() {
+            document.getElementById('fileCount').textContent = uploadedFilenames.length || '—';
+            if (sliderStartISO && sliderEndISO) {
+                const start = new Date(sliderStartISO);
+                const end = new Date(sliderEndISO);
+                const duration = Math.round((end - start) / 1000 / 60); // minutes
+                document.getElementById('timelineInfo').textContent = `${duration}min`;
+            }
+            document.getElementById('selectedStation').textContent = selectedStationId || '—';
+        }
+
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
+            e.preventDefault();
 
             const filesInput = document.getElementById('seedlink_files');
             const formData = new FormData();
@@ -161,6 +266,8 @@
             await refreshMap();
             await drawWave();
             setPlayingState(false);
+            updateSidePanelInfo();
+            renderLegend();
         });
 
         async function initTimeline() {
@@ -175,6 +282,7 @@
             slider.value = sliderMin;
             slider.disabled = false;
             updateSliderLabel();
+            updateSidePanelInfo();
         }
 
         slider.addEventListener('input', async () => {
@@ -215,6 +323,7 @@
             }));
             if (!selectedStationId) selectedStationId = stations[0].id;
             stationSelect.value = selectedStationId;
+            document.getElementById('selectedStation').textContent = selectedStationId;
         }
 
         async function refreshMap() {
@@ -227,6 +336,7 @@
             const stations = Array.isArray(data.stations) ? data.stations : [];
             if (!selectedStationId && stations.length) selectedStationId = stations[0].id;
             populateStationSelect(stations);
+            updateBadges(stations);
 
             stations.forEach(st => {
                 const col = colorForRMS_10(st.rms);
@@ -238,36 +348,18 @@
                 m.on('click', async () => {
                     selectedStationId = st.id;
                     stationSelect.value = st.id;
+                    document.getElementById('selectedStation').textContent = st.id;
                     await drawWave();
                 });
                 markers.push(m);
             });
-
-            const badges = document.getElementById('badges');
-            badges.innerHTML = stations.map(st =>
-                `<span class="chip" style="border-color:${colorForRMS_10(st.rms)};color:${colorForRMS_10(st.rms)}">
-                    ${st.id}: <b>${st.rms.toFixed(1)}</b></span>`
-            ).join(' ');
-            renderLegend();
         }
 
         stationSelect.addEventListener('change', async () => {
             selectedStationId = stationSelect.value;
+            document.getElementById('selectedStation').textContent = selectedStationId;
             await drawWave();
         });
-
-        function renderLegend() {
-            const box = document.getElementById('legend');
-            let html = `<h4>RMS ${Math.round(RMS_MIN)} → ${Math.round(RMS_MAX)} (10 bins)</h4>`;
-            for (let i = 0; i < SCALE10.length; i++) {
-                const lo = RMS_MIN + i * (RMS_MAX - RMS_MIN) / BINS;
-                const hi = RMS_MIN + (i + 1) * (RMS_MAX - RMS_MIN) / BINS;
-                html += `<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span>
-                    <span>${lo.toFixed(1)}–${hi.toFixed(1)}</span></div>`;
-            }
-            html += `<div class="note"><b style="color:${RED_OOR}">Red</b> = outside ${RMS_MIN.toFixed(1)}–${RMS_MAX.toFixed(1)}</div>`;
-            box.innerHTML = html;
-        }
 
         async function drawWave() {
             if (!uploadedFilenames.length || !selectedStationId) return;
@@ -307,6 +399,7 @@
         function setPlayingState(isPlaying) {
             playBtn.disabled = isPlaying || slider.disabled;
             pauseBtn.disabled = !isPlaying || slider.disabled;
+            document.getElementById('playingStatus').textContent = isPlaying ? 'Playing' : 'Stopped';
         }
 
         async function stepOnce() {
@@ -338,6 +431,9 @@
             if (!res.ok) throw new Error('Request failed');
             return res.json();
         }
+
+        // Initialize legend on page load
+        renderLegend();
     </script>
 </body>
 </html>
