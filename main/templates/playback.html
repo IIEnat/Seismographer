@@ -37,7 +37,7 @@
         <!-- SIDE PANEL -->
         <aside id="sidePanel">
             <section class="panel-section">
-                <h3 class="panel-title">Stations</h3>
+                <h3 class="panel-title">Station</h3>
                 <div id="badgeList" class="panel-chips"></div>
             </section>
 
@@ -80,11 +80,13 @@
     </div>
 
     <script>
+        // Constants for RMS thresholds, legend binning and colour scale
         let RMS_MIN = 30000, RMS_MAX = 40000;
         const BINS = 10;
         const RED_OOR = '#ff1744';
         const SCALE10 = ['#440154', '#482878', '#3e4a89', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'];
 
+        // Update RMS colour range and render
         function setColorRange(minV, maxV) {
             if (Number.isFinite(minV) && Number.isFinite(maxV) && minV < maxV) {
                 RMS_MIN = minV;
@@ -94,6 +96,7 @@
             }
         }
 
+        // Map RMS value to colours
         function colorForRMS_10(rms) {
             if (!Number.isFinite(rms)) return RED_OOR;
             if (rms < RMS_MIN || rms > RMS_MAX) return RED_OOR;
@@ -102,6 +105,7 @@
             return SCALE10[idx];
         }
 
+        // Format to correct timezone
         function fmtAWST(x) {
             const d = (x instanceof Date) ? x : new Date(x);
             const parts = new Intl.DateTimeFormat("en-AU", {
@@ -113,15 +117,18 @@
             return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} AWST`;
         }
 
+        // Global state variables for slider
         let uploadedFilenames = [], sliderMin = 0, sliderMax = 0, sliderStartISO = null, sliderEndISO = null,
             selectedStationId = null, playTimer = null;
+
+        // DOM elements
         const slider = document.getElementById('playbackSlider'),
               sliderLabel = document.getElementById('sliderLabel'),
               playBtn = document.getElementById('playBtn'),
               pauseBtn = document.getElementById('pauseBtn'),
               stationSelect = document.getElementById('stationSelect');
 
-        // Initialize legend
+        // Initialise legend for side panel
         function renderLegend() {
             const root = document.getElementById('legendBins');
             root.innerHTML = '';
@@ -136,6 +143,7 @@
             }
         }
 
+        // Render station badge for the side panel
         function updateBadges(stations) {
             const wrap = document.getElementById('badgeList');
             wrap.innerHTML = '';
@@ -155,17 +163,19 @@
             });
         }
 
+        // Update side panel info
         function updateSidePanelInfo() {
             document.getElementById('fileCount').textContent = uploadedFilenames.length || '—';
             if (sliderStartISO && sliderEndISO) {
                 const start = new Date(sliderStartISO);
                 const end = new Date(sliderEndISO);
-                const duration = Math.round((end - start) / 1000 / 60); // minutes
+                const duration = Math.round((end - start) / 1000 / 60);
                 document.getElementById('timelineInfo').textContent = `${duration}min`;
             }
             document.getElementById('selectedStation').textContent = selectedStationId || '—';
         }
 
+        // Handle file uploads
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -191,7 +201,7 @@
             const q = document.getElementById('queryResult');
             q.style.display = 'block';
 
-            // ---- Verify the new station JSON shape (timestamp, band/env lengths & values) ----
+            // Verify the new station JSON shape (timestamp, band/env lengths & values) 
             try {
                 const json = await fetchJSON(`/playback_json/${uploadedFilenames.join(',')}`);
                 const n = Array.isArray(json?.stations) ? json.stations.length : 0;
@@ -202,7 +212,7 @@
                 q.innerHTML = 'playback_json fetch failed';
             }
 
-            // ---- Detect hour min/max RMS to seed the color scale (optional) ----
+            // Detect hour min/max RMS to seed the color scale (optional) 
             try {
                 const stats = await fetchJSON(`/playback_stats/${uploadedFilenames.join(',')}`);
                 const vmin = stats?.min?.value, vmax = stats?.max?.value;
@@ -229,6 +239,7 @@
             renderLegend();
         });
 
+        // Initialise timeline and slider
         async function initTimeline() {
             const res = await fetch(`/playback_timeline/${uploadedFilenames.join(',')}`, { cache: 'no-store' });
             const t = await res.json();
@@ -244,18 +255,21 @@
             updateSidePanelInfo();
         }
 
+        // Slide input handler
         slider.addEventListener('input', async () => {
             updateSliderLabel();
             await refreshMap();
             await drawWave();
         });
 
+        // Update the slider label with start/end/current times
         function updateSliderLabel() {
             if (!sliderStartISO || !sliderEndISO) { sliderLabel.textContent = ''; return; }
             const curISO = getSliderISO(Number(slider.value));
             sliderLabel.textContent = `${fmtAWST(sliderStartISO)} — ${fmtAWST(sliderEndISO)} | Current: ${fmtAWST(curISO)}`;
         }
 
+        // Convert slider value to ISO timestamp
         function getSliderISO(val) {
             const start = new Date(sliderStartISO).getTime();
             const end = new Date(sliderEndISO).getTime();
@@ -263,7 +277,10 @@
             return new Date(start + (val - sliderMin) * step).toISOString();
         }
 
+        // Initialise map and markers variables
         let map = null, markers = [];
+
+        // Check if leaflet map exsits and create if needed
         function ensureMap() {
             if (map) return;
             map = L.map('seismicMap', { preferCanvas: true }).setView([-31.35, 115.92], 10);
@@ -273,6 +290,7 @@
             window.addEventListener('resize', () => map.invalidateSize());
         }
 
+        // Populate station dropdown menu in controls
         function populateStationSelect(stations) {
             if (!stations || stations.length <= 1) { stationSelect.hidden = true; stationSelect.replaceChildren(); return; }
             stationSelect.hidden = false;
@@ -287,6 +305,7 @@
             document.getElementById('selectedStation').textContent = selectedStationId;
         }
 
+        // Refresh map controls as needed
         async function refreshMap() {
             if (!uploadedFilenames.length) return;
             ensureMap();
@@ -336,12 +355,14 @@
             }
         }
 
+        // Update a selected station
         stationSelect.addEventListener('change', async () => {
             selectedStationId = stationSelect.value;
             document.getElementById('selectedStation').textContent = selectedStationId;
             await drawWave();
         });
 
+        // Fetch and plot the waveform
         async function drawWave() {
             if (!uploadedFilenames.length || !selectedStationId) {
                 Plotly.react('wave', [], {
@@ -388,12 +409,14 @@
             }, { responsive: true });
         }
 
+        // Update playing state via play/pause
         function setPlayingState(isPlaying) {
             playBtn.disabled = isPlaying || slider.disabled;
             pauseBtn.disabled = !isPlaying || slider.disabled;
             document.getElementById('playingStatus').textContent = isPlaying ? 'Playing' : 'Stopped';
         }
 
+        // Step forward a timeframe and refresh map
         async function stepOnce() {
             const next = Math.min(Number(slider.max), Number(slider.value) + 1);
             slider.value = next;
@@ -403,21 +426,25 @@
             if (next >= Number(slider.max)) stopPlaying();
         }
 
+        // Start playing with play button
         function startPlaying(intervalMs = 1000) {
             if (playTimer || slider.disabled) return;
             setPlayingState(true);
             playTimer = setInterval(stepOnce, intervalMs);
         }
 
+        // Stop playing with stop button
         function stopPlaying() {
             if (playTimer) clearInterval(playTimer);
             playTimer = null;
             setPlayingState(false);
         }
 
+        // Creating play/pause events
         playBtn.addEventListener('click', () => startPlaying(1000));
         pauseBtn.addEventListener('click', stopPlaying);
 
+        // Fetch JSON from server
         async function fetchJSON(url) {
             const res = await fetch(url, { cache: 'no-store' });
             if (!res.ok) throw new Error('Request failed');
