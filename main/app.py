@@ -42,8 +42,15 @@ _threads    = [start_processor_thread(p) for p in _processors]
 def _sid(p) -> str:
     return f"{getattr(p, 'net', 'GG')}.{p.sta}..{getattr(p, 'chan', 'HNZ')}"
 
+## ------------- NEW & CHANGED ------------- ## 
 def _latlon(p) -> Tuple[float, float]:
+    lat = getattr(p, "lat", None)
+    lon = getattr(p, "lon", None)
+    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+        return float(lat), float(lon)
+    # fallback to config if receiver didn’t resolve coords
     return CFG.COORDS.get(p.sta, (-31.35, 115.92))
+## ------------- NEW & CHANGED ------------- ## 
 
 @socketio.on("connect")
 def _on_connect():
@@ -150,12 +157,23 @@ def home():
     return render_template("home.html", title="Live Seismic Map",
                            active_page="home", startup_seconds=int(CFG.STARTUP_SECONDS))
 
+## ------------- NEW & CHANGED ------------- ## 
 @app.route("/raw")
 def raw_dump_all():
     out = {}
     for p in _processors:
-        out[_sid(p)] = p.latest_raw()
-    return jsonify({"updated": datetime.now(timezone.utc).isoformat(), "stations": out})
+        snap = p.latest_raw()
+        if snap is not None:
+            # add coords from the processor instance
+            snap = dict(snap)  # shallow copy so we don’t mutate receiver state
+            snap["lat"] = getattr(p, "lat", None)
+            snap["lon"] = getattr(p, "lon", None)
+        out[_sid(p)] = snap
+    return jsonify({
+        "updated": datetime.now(timezone.utc).isoformat(),
+        "stations": out
+    })
+## ------------- NEW & CHANGED ------------- ## 
 
 @app.route("/playback", methods=["GET", "POST"])
 def playback():
