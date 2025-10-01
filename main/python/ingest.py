@@ -2,13 +2,12 @@
 Ingest layer for Seismographer project.
 
 Supports:
-- SyntheticIngest: Generates fake sinusoidal data for testing (1 s bursts).
-- SeedLinkIngest: Placeholder for real SeedLink server client (to be implemented).
-- SimEasySeedLinkClient: Simulated SeedLink client producing ObsPy Traces (TEST ONLY).
+- SyntheticIngest
+- SeedLinkIngest (placeholder)
+- SimEasySeedLinkClient (TEST ONLY)
 
 All ingest paths call a provided callback: on_trace(Trace).
 """
-
 from __future__ import annotations
 import threading, time
 from dataclasses import dataclass
@@ -17,6 +16,9 @@ from typing import Callable, List, Optional
 
 import numpy as np
 from obspy import Trace, UTCDateTime
+
+import config as CFG
+
 try:
     from obspy.clients.seedlink.easyseedlink import EasySeedLinkClient  # noqa: F401
 except Exception:
@@ -24,18 +26,18 @@ except Exception:
 
 OnTrace = Callable[[Trace], None]
 
+# ---------------- Global speed control ----------------
+SPEED_FACTOR = CFG.SPEED_FACTOR
 
 # ---------------- Base + Data Classes ----------------
 class IngestBase:
     def start(self): raise NotImplementedError
     def stop(self):  pass
 
-
 @dataclass(frozen=True)
 class Chan:
     net: str; sta: str; loc: str; cha: str
     lat: float; lon: float; freq: float; phase: float; amp: float = 1200.0
-
 
 # ---------------- Real SeedLink Stub ----------------
 class SeedLinkIngest(IngestBase):
@@ -47,13 +49,11 @@ class SeedLinkIngest(IngestBase):
         self._stop = threading.Event()
 
     def start(self):
-        # TODO: implement with EasySeedLinkClient once server details are ready.
         raise NotImplementedError("SeedLinkIngest not yet implemented")
 
     def stop(self):
         self._stop.set()
         if self._t: self._t.join(timeout=1.0)
-
 
 # ---------------- Synthetic Generator (1 Hz bursts) ----------------
 class SyntheticIngest(IngestBase):
@@ -73,9 +73,7 @@ class SyntheticIngest(IngestBase):
             for ch in self.chans:
                 w = np.sin(2*np.pi*(ch.freq*t + ch.phase)) + 0.15*np.random.randn(n)
                 data = (w * ch.amp).astype(np.int32)
-                tr = Trace(
-                    data=data,
-                )
+                tr = Trace(data=data)
                 tr.stats.network = ch.net
                 tr.stats.station = ch.sta
                 tr.stats.location = ch.loc
@@ -85,7 +83,8 @@ class SyntheticIngest(IngestBase):
                 tr.stats.coordinates = {"latitude": ch.lat, "longitude": ch.lon}
                 self.on_trace(tr)
             now = datetime.now(timezone.utc).timestamp()
-            time.sleep(max(0.0, 1.0 - (now - int(now))))
+            sleep = max(0.0, 1.0 - (now - int(now)))
+            time.sleep(sleep / SPEED_FACTOR)
 
     def start(self):
         if self._t and self._t.is_alive(): return
@@ -97,14 +96,13 @@ class SyntheticIngest(IngestBase):
         self._stop.set()
         if self._t: self._t.join(timeout=1.0)
 
-
 # ---------------- Simulated SeedLink Client (TESTING ONLY) ----------------
 class SimEasySeedLinkClient:
     """
     Simulates a SeedLink client producing synthetic ObsPy Trace objects.
     Useful for testing the bandpass/envelope StationProcessor pipeline.
     """
-    def __init__(self, host: str, port: int = 18000, fs: float = 250.0,
+    def __init__(self, host: str, port: int = 18000, fs: float = CFG.FS,
                  burst_n: int = 206, burst_dt: float = 0.824):
         self.host = host
         self.port = port
@@ -125,7 +123,6 @@ class SimEasySeedLinkClient:
         phase = 0.0
         while not self._stop:
             for net, sta, chan in self._sel:
-                # low-freq sine (~0.12 Hz) + noise
                 t = np.arange(self.burst_n) / self.fs
                 phase += 2 * np.pi * 0.12 * self.burst_dt
                 sig = 3000 * np.sin(2*np.pi*0.12*t + phase) + 500 * np.random.randn(self.burst_n)
@@ -138,11 +135,10 @@ class SimEasySeedLinkClient:
                 tr.stats.starttime = t0
                 self.on_data(tr)
                 t0 += self.burst_n / self.fs
-            time.sleep(self.burst_dt)
+            time.sleep(self.burst_dt / SPEED_FACTOR)
 
     def stop(self):
         self._stop = True
-
 
 if __name__ == "__main__":
     def on_data(trace):
