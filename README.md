@@ -42,6 +42,7 @@ $ flask run
 │   ├── config.py
 │   ├── python/
 │   │   ├── ingest.py
+│   │   ├── location_retrieval.py
 │   │   └── receiver.py
 │   ├── requirements.txt
 │   ├── static/
@@ -51,5 +52,4 @@ $ flask run
 │   │   ├── home.html
 │   │   ├── navbar.html
 │   │   └── playback.html
-│   └── uploads/
 ```
