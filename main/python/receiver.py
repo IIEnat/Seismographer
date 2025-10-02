@@ -22,6 +22,9 @@ from scipy.interpolate import PchipInterpolator
 import config as CFG
 from python.ingest import SimEasySeedLinkClient
 
+## ------------- NEW ------------- ## 
+from python.location_retrieval import get_location_or_fallback
+## ------------- NEW ------------- ## 
 
 # ---------------------------- Data classes ------------------------------
 @dataclass
@@ -55,6 +58,13 @@ class StationProcessor:
         raw_seconds: int = CFG.RAW_SECONDS,
     ) -> None:
         self.host, self.net, self.sta, self.chan, self.fs = host, net, sta, chan, float(fs)
+
+        ## ------------- NEW ------------- ## 
+        try:
+            self.lat, self.lon = get_location_or_fallback(self.host, timeout=0.4)
+        except Exception:
+            self.lat, self.lon = 0.0, 0.0
+        ## ------------- NEW ------------- ## 
 
         # UI queues (~5 Hz)
         self.q = Queues(band=deque(maxlen=qsize), env=deque(maxlen=qsize))
@@ -273,6 +283,10 @@ class StationProcessor:
                 "env_len": len(self.q.env),
                 "env_min": self.env_min,
                 "env_max": self.env_max,
+                ## ------------- NEW ------------- ## 
+                "lat": self.lat,           
+                "lon": self.lon, 
+                ## ------------- NEW ------------- ## 
                 "band": [round(v, 3) for v in self.q.band],
                 "env":  [round(v, 3) for v in self.q.env],
                 "patch_epoch": self._patch_epoch,
