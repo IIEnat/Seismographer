@@ -177,30 +177,27 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
     # ---------- Routes ----------
     @bp.route("/playback", methods=["GET", "POST"])
     def playback():
-        """GET: render UI. POST: accept multi-file upload and return filenames."""
+        """GET: render UI. POST: accept exactly ONE MiniSEED file and return its filename."""
         if request.method == "POST":
             clear_uploads_folder()
-            files = request.files.getlist("seedlink_file")
-            if not files:
-                return jsonify({"status": "error", "message": "No files uploaded"}), 400
 
-            filenames: List[str] = []
-            for file in files:
-                if not file or not file.filename:
-                    continue
-                filename = secure_filename(file.filename)
-                dest = os.path.join(upload_dir, filename)
-                try:
-                    file.save(dest)
-                    filenames.append(filename)
-                except Exception as e:
-                    print("Save error:", e)
+            files = [f for f in request.files.getlist("seedlink_file") if f and f.filename]
 
-            if not filenames:
-                return jsonify({"status": "error", "message": "No valid filenames"}), 400
-            return jsonify({"status": "uploaded", "filenames": filenames})
+            if len(files) == 0:
+                return jsonify({"status": "error", "message": "No file uploaded"}), 400
+            if len(files) > 1:
+                return jsonify({"status": "error", "message": "Only one file may be uploaded"}), 400
 
-        # GET -> playback UI
+            file = files[0]
+            filename = secure_filename(file.filename)
+            dest = os.path.join(upload_dir, filename)
+            try:
+                file.save(dest)
+            except Exception as e:
+                return jsonify({"status": "error", "message": f"Failed to save file: {e}"}), 500
+
+            return jsonify({"status": "uploaded", "filenames": [filename]})
+
         return render_template("playback.html")
 
     @bp.route("/playback_timeline/<filenames>")
