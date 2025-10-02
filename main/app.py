@@ -33,7 +33,21 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 AWST = timezone(timedelta(hours=8))  # UTC+8
+
 APP_BOOT_TS = time.time()
+
+# Register playback blueprint (all playback endpoints)
+from python.playback_routes import create_playback_blueprint
+app.register_blueprint(create_playback_blueprint(UPLOAD_DIR, AWST))
+
+# Demo coords for stations (override with real values if available)
+COORDS: Dict[str, Tuple[float, float]] = {
+    "WAR27": (-31.35, 115.92),
+    "WAR32": (-31.40, 115.96),
+    "WAR33": (-31.45, 115.98),
+}
+
+
 # ---------------------------- Live processors ---------------------------
 
 _processors = make_processors()
@@ -279,6 +293,7 @@ def playback_stats(filenames: str):
         return {"value": val, "id": sid, "iso": iso}
 
     return jsonify({"min": pack(best_min), "max": pack(best_max)})
+
 
 # -------------------------------- Entrypoint -----------------------------
 
