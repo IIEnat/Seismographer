@@ -12,130 +12,263 @@
 </head>
 <body>
   {% include "navbar.html" %}
-  <div id="wrap">
+
+  <div id="wrap" class="with-panel">
+    <!-- MAP -->
     <div id="mapWrap" class="container-main">
       <div id="map"></div>
-      <div id="badges" class="overlay dark"></div>
-      <div id="legend" class="overlay dark"></div>
+
+      <!-- startup overlay -->
+      <div id="startupOverlay" class="overlay-startup" style="display:none;">
+        <div id="startupBox" class="overlay-startup__box"></div>
+      </div>
     </div>
-    <div id="waveWrap" class="container-section">
-      <div id="wave"></div>
-    </div>
+
+    <!-- SIDE PANEL -->
+    <aside id="sidePanel">
+      <section class="panel-section">
+        <h3 class="panel-title">Stations</h3>
+        <div id="badgeList" class="panel-chips"></div>
+      </section>
+
+      <section class="panel-section">
+        <h3 class="panel-title">Info</h3>
+        <div class="panel-kv"><span>Network</span><b>GG</b></div>
+        <div class="panel-kv"><span>Streaming</span><b>250 Hz raw</b></div>
+        <div class="panel-kv"><span>Processed</span><b>5 Hz</b></div>
+        <div class="panel-kv"><span>Selected</span><b id="selectedSta">—</b></div>
+      </section>
+
+      <section class="panel-section">
+        <h3 class="panel-title">Legend (Envelope 0–1)</h3>
+        <div id="legendBins"></div>
+        <div class="panel-note"><b style="color:#ff1744">Red</b> = out of range / missing</div>
+      </section>
+    </aside>
   </div>
 
-<script>
-/* ------------ Color scale (normalized 0..1, 10 bins) ------------ */
-const BINS=10, RED='#ff1744';
-const SCALE10=['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'];
-const lastSnapById = {};   // id -> latest socket payload for that station
+  <!-- WAVEFORM -->
+  <div id="waveWrap" class="container-section">
+    <div id="wave"></div>
+  </div>
 
-const colorForNorm = v => (!Number.isFinite(v) || v<0 || v>1) ? RED : SCALE10[Math.min(BINS-1, Math.max(0, Math.floor(v*BINS)))];
-const fmt = v => Number.isFinite(v) ? v.toFixed(1) : '—';
-const fmtPct = v => Number.isFinite(v) ? (v*100).toFixed(0)+'%' : '—';
+  <script>
+    /* ==================== constants ==================== */
+    const BINS = 10, RED = '#ff1744';
+    const SCALE10 = ['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'];
 
-/* ------------------------------ Map ------------------------------ */
-const map=L.map('map',{preferCanvas:true});
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
-map.setView([-31.35,115.92],10);
-requestAnimationFrame(()=>map.invalidateSize());
-window.addEventListener('resize', ()=>map.invalidateSize());
+    // FE seam handling
+    const UI_FS = 5;                         // 5 Hz series from backend
+    const TAIL_WINDOW_S = 40;               // redraw tail length
+    const FORCED_RECONCILE_EVERY_S = 2;     // how often to re-smooth the tail
+    const FORCED_FULL_REDRAW_EVERY_S = 40;  // belt & suspenders
 
-const stationLayer=L.layerGroup().addTo(map), markers={};
-let firstFit=false, openId=null;
+    /* ==================== helpers ==================== */
+    const colorForNorm = v =>
+      (!Number.isFinite(v) || v < 0 || v > 1)
+        ? RED
+        : SCALE10[Math.min(BINS-1, Math.max(0, Math.floor(v*BINS)))] ;
 
-function ensureMarker(s){
-  if (markers[s.id]) return markers[s.id];
-  const circle=L.circle([s.lat,s.lon],{radius:1000,color:'#222',weight:2,fillColor:colorForNorm(s.norm),fillOpacity:0.75});
-  const dot=L.circleMarker([s.lat,s.lon],{radius:6,color:'#000',fillColor:'#000',fillOpacity:1,weight:1});
-  const tip=L.tooltip({permanent:true,direction:'top',offset:[0,-8],className:'rmsTip'})
-              .setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
-  dot.bindTooltip(tip).openTooltip();
-  const group=L.layerGroup([circle,dot]).addTo(stationLayer);
-  circle.on('click',()=>loadWaveform(s.id)); dot.on('click',()=>loadWaveform(s.id));
-  return (markers[s.id]={group,circle,dot,tip});
-}
-function upsertMarker(s){
-  const m=markers[s.id]||ensureMarker(s), ll=L.latLng(s.lat,s.lon);
-  m.circle.setLatLng(ll); m.dot.setLatLng(ll);
-  m.circle.setStyle({fillColor:colorForNorm(s.norm)});
-  m.tip.setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
-}
+    const fmt = v => Number.isFinite(v) ? v.toFixed(1) : '—';
+    const fmtPct = v => Number.isFinite(v) ? (v*100).toFixed(0)+'%' : '—';
 
-/* ----------------------------- Legend ---------------------------- */
-(function renderLegend(){
-  const box=document.getElementById('legend');
-  let html='<h4>Envelope (normalized 0–1)</h4>';
-  for(let i=0;i<SCALE10.length;i++){
-    html+=`<div class="row"><span class="sw" style="background:${SCALE10[i]}"></span><span>${(i/BINS).toFixed(1)}–${((i+1)/BINS).toFixed(1)}</span></div>`;
-  }
-  html+=`<div class="note"><b style="color:${RED}">Red</b> = out of range / missing</div>`;
-  box.innerHTML=html;
-})();
+    /* ==================== map ==================== */
+    const map = L.map('map', { preferCanvas:true });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      { maxZoom:19, attribution:'© OpenStreetMap' }).addTo(map);
+    map.setView([-31.35,115.92],10);
+    requestAnimationFrame(()=>map.invalidateSize());
+    window.addEventListener('resize', ()=>map.invalidateSize());
 
-function updateBadges(stations){
-  const root=document.getElementById('badges'); root.innerHTML='';
-  stations.forEach(s=>{
-    const span=document.createElement('span');
-    span.className='badge';
-    span.style.borderColor=span.style.color=colorForNorm(s.norm);
-    span.textContent=`${s.id}: env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`;
-    span.onclick=()=>loadWaveform(s.id);
-    root.appendChild(span);
-  });
-}
-
-/* ---------------------------- Waveform --------------------------- */
-async function loadWaveform(id){ openId=id; await drawWave(true); }
-
-async function drawWave(force=false){
-  if (!openId) return;
-  const snap=lastSnapById[openId];
-  if (snap && Array.isArray(snap.band) && snap.band.length){
-    const fs=Number(snap.env_fs||5), tEnd=snap.timestamp?new Date(snap.timestamp).getTime():Date.now();
-    const mkXs = (arr)=>arr.map((_,i)=>new Date(tEnd - (arr.length-1-i)*1000/fs));
-    const bandXs=mkXs(snap.band);
-    const traces=[{x:bandXs,y:snap.band,type:'scatter',mode:'lines',name:'Band-pass (0.05–0.10 Hz)',line:{width:1.6}}];
-    if (snap.env_series?.length){
-      traces.push({x:mkXs(snap.env_series),y:snap.env_series,type:'scatter',mode:'lines',name:'Envelope',yaxis:'y2',line:{width:2}});
+    const stationLayer = L.layerGroup().addTo(map), markers = {};
+    function ensureMarker(s){
+      if (markers[s.id]) return markers[s.id];
+      const circle = L.circle([s.lat,s.lon], {
+        radius:1000, color:'#222', weight:2, fillColor:colorForNorm(s.norm), fillOpacity:0.75
+      });
+      const dot = L.circleMarker([s.lat,s.lon], { radius:6, color:'#000', fillColor:'#000', fillOpacity:1, weight:1 });
+      const tip = L.tooltip({ permanent:true, direction:'top', offset:[0,-8], className:'rmsTip' })
+        .setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
+      dot.bindTooltip(tip).openTooltip();
+      const group = L.layerGroup([circle,dot]).addTo(stationLayer);
+      circle.on('click',()=>loadWaveform(s.id)); dot.on('click',()=>loadWaveform(s.id));
+      return (markers[s.id] = {group,circle,dot,tip});
     }
-    Plotly.react('wave',traces,{
-      paper_bgcolor:'#111',plot_bgcolor:'#111',font:{color:'#eaeaea'},
-      margin:{l:50,r:10,t:10,b:40},
-      xaxis:{title:'time',gridcolor:'#333'},
-      yaxis:{title:'band-pass',gridcolor:'#333'},
-      yaxis2:{overlaying:'y',side:'right',title:'envelope',showgrid:false,zeroline:false},
-      legend:{orientation:'h',x:0,y:1.12},uirevision:'keep'
-    },{responsive:true});
-    return;
-  }
-  // No data yet — clear
-  Plotly.react('wave',[],{
-    paper_bgcolor:'#111',plot_bgcolor:'#111',font:{color:'#eaeaea'},
-    margin:{l:50,r:10,t:10,b:40},
-    xaxis:{title:'time',gridcolor:'#333'},
-    yaxis:{title:'band-pass',gridcolor:'#333'},uirevision:'keep'
-  },{responsive:true});
-}
+    function upsertMarker(s){
+      const m = markers[s.id] || ensureMarker(s);
+      const ll = L.latLng(s.lat,s.lon);
+      m.circle.setLatLng(ll); m.dot.setLatLng(ll);
+      m.circle.setStyle({ fillColor: colorForNorm(s.norm) });
+      m.tip.setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
+    }
 
-/* ----------------------------- Socket ---------------------------- */
-const socket=io();
-socket.on("station_update",(payload)=>{
-  const stations=Array.isArray(payload?.stations)?payload.stations:[];
-  stations.forEach(s=>{
-    if (!Number.isFinite(s.lat)||!Number.isFinite(s.lon)) return;
-    upsertMarker(s);
-    lastSnapById[s.id]=s;
-  });
+    /* ==================== side panel ==================== */
+    (function renderLegend(){
+      const root = document.getElementById('legendBins');
+      root.innerHTML = '';
+      for (let i=0;i<SCALE10.length;i++){
+        const row = document.createElement('div');
+        row.className='legend-row';
+        row.innerHTML = `<span class="sw" style="background:${SCALE10[i]}"></span>
+                         <span>${(i/BINS).toFixed(1)}–${((i+1)/BINS).toFixed(1)}</span>`;
+        root.appendChild(row);
+      }
+    })();
 
-  if (!firstFit && stations.length){
-    const b=L.latLngBounds(stations.map(s=>[s.lat,s.lon]));
-    if (b.isValid()) map.fitBounds(b,{padding:[30,30],maxZoom:12});
-    firstFit=true;
-    loadWaveform(stations[0].id);
-  }
-  updateBadges(stations);
-});
-setInterval(()=>drawWave(false),1000);
-</script>
+    function updateBadges(stations){
+      const wrap = document.getElementById('badgeList');
+      wrap.innerHTML = '';
+      stations.forEach(s=>{
+        const chip = document.createElement('button');
+        chip.className='chip';
+        const c = colorForNorm(s.norm);
+        chip.style.borderColor = chip.style.color = c;
+        chip.textContent = `${s.id} — env ${fmt(s.env_series?.at(-1))}`;
+        chip.onclick = ()=>loadWaveform(s.id);
+        wrap.appendChild(chip);
+      });
+    }
+
+    /* ==================== waveform + FE tail fix ==================== */
+    const lastSnapById = {};
+    let openId = null, firstFit = false;
+
+    function loadWaveform(id){ openId = id; document.getElementById('selectedSta').textContent = id; drawWave(true); }
+
+    // FE: light tail reconciliation using the last 5 Hz band peaks
+    function reconcileTailFE(snap){
+      if (!snap || !Array.isArray(snap.band) || !snap.band.length) return;
+      const band = snap.band.slice();
+      const env  = Array.isArray(snap.env_series) ? snap.env_series.slice() : [];
+      if (!env.length) return;
+
+      const tailPts = Math.max(1, Math.round(TAIL_WINDOW_S * UI_FS));
+      const end = env.length - 1;
+      const start = Math.max(0, end - tailPts - Math.round(3*UI_FS));
+
+      const ab = band.map(Math.abs);
+      const minDist = Math.max(1, Math.round(2 * UI_FS));
+      const peaks = [];
+      for (let i=Math.max(1,start+1); i<end-1; i++){
+        if (ab[i] >= ab[i-1] && ab[i] >= ab[i+1]){
+          if (peaks.length===0 || (i - peaks[peaks.length-1]) >= minDist) peaks.push(i);
+        }
+      }
+      if (peaks[0] !== start) peaks.unshift(start);
+      if (peaks[peaks.length-1] !== end) peaks.push(end);
+
+      const envNew = env.slice();
+      for (let k=0;k<peaks.length-1;k++){
+        const i0 = peaks[k],  i1 = peaks[k+1];
+        const y0 = ab[i0],    y1 = ab[i1];
+        const span = i1 - i0 || 1;
+        for (let j=i0;j<=i1;j++){
+          const t = (j - i0)/span;
+          envNew[j] = (1-t)*y0 + t*y1;
+        }
+      }
+      for (let i=start;i<=end;i++) env[i] = envNew[i];
+      snap.env_series = env;
+      snap._fePatchedEpoch = (snap._fePatchedEpoch||0) + 1;
+    }
+
+    function drawWave(force=false){
+      if (!openId) return;
+      const snap = lastSnapById[openId];
+      if (!snap || !Array.isArray(snap.band) || !snap.band.length){
+        Plotly.react('wave', [], {
+          paper_bgcolor:'#111', plot_bgcolor:'#111', font:{color:'#eaeaea'},
+          margin:{l:50,r:10,t:10,b:40}, xaxis:{gridcolor:'#333'}, yaxis:{gridcolor:'#333'}
+        }, {responsive:true});
+        return;
+      }
+
+      reconcileTailFE(snap);
+
+      const fs = Number(snap.env_fs || UI_FS);
+      const tEnd = snap.timestamp ? new Date(snap.timestamp).getTime() : Date.now();
+      const mkXs = arr => arr.map((_,i)=>new Date(tEnd - (arr.length-1-i)*1000/fs));
+
+      const traces = [{
+        x: mkXs(snap.band), y: snap.band,
+        type:'scatter', mode:'lines', name:'Band-pass (0.05–0.10 Hz)', line:{width:1.6}
+      }];
+      if (snap.env_series?.length){
+        traces.push({ x: mkXs(snap.env_series), y: snap.env_series, type:'scatter', mode:'lines', name:'Envelope', line:{width:2} });
+      }
+
+      Plotly.react('wave', traces, {
+        paper_bgcolor:'#111', plot_bgcolor:'#111', font:{color:'#eaeaea'},
+        margin:{l:50,r:10,t:10,b:40},
+        xaxis:{title:'time',gridcolor:'#333'},
+        yaxis:{title:'band-pass / envelope',gridcolor:'#333'},
+        legend:{orientation:'h',x:0,y:1.12},
+        uirevision:'keep'
+      }, {responsive:true});
+    }
+
+    /* ==================== startup overlay (app-boot only) ==================== */
+    const startupOverlay = document.getElementById('startupOverlay');
+    const startupBox     = document.getElementById('startupBox');
+
+    function startTickdown(seconds){
+      const total = Number(seconds) || 0;
+      if (total <= 0) { startupOverlay.style.display = 'none'; return; }
+      startupOverlay.style.display = 'flex';
+      let remaining = total;
+      startupBox.innerHTML = `
+        <b>Preparing the first ${total}s for accurate curves…</b><br/>
+        Display will begin automatically once ready.<br/>
+        <span class="text-muted">Remaining: ${remaining}s</span>`;
+      const iv = setInterval(()=>{
+        remaining--;
+        if (remaining <= 0){
+          clearInterval(iv);
+          startupOverlay.style.display = 'none';
+          return;
+        }
+        startupBox.querySelector('.text-muted').textContent = `Remaining: ${remaining}s`;
+      }, 1000);
+    }
+
+    /* ==================== socket wiring ==================== */
+    const socket = io();
+
+    // NEW: single app-boot event; no reliance on payload fields
+    socket.on("startup_tickdown", (msg)=>{
+      const sec = Number(msg?.delay);
+      startTickdown(Number.isFinite(sec) ? sec : 0);
+    });
+
+    socket.on("station_update",(payload)=>{
+      const stations = Array.isArray(payload?.stations) ? payload.stations : [];
+
+      stations.forEach(s=>{
+        if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) return;
+        upsertMarker(s);
+        lastSnapById[s.id] = s;
+      });
+
+      if (!firstFit && stations.length){
+        const b = L.latLngBounds(stations.map(s=>[s.lat,s.lon]));
+        if (b.isValid()) map.fitBounds(b,{padding:[30,30],maxZoom:12});
+        firstFit = true;
+        openId = stations[0].id;
+        document.getElementById('selectedSta').textContent = openId;
+        drawWave(true);
+      }
+
+      updateBadges(stations);
+    });
+
+    // keep the curve moving
+    setInterval(()=>drawWave(false), 1000);
+
+    // FE tail reconciliation every few seconds
+    setInterval(()=>{ if (openId && lastSnapById[openId]) { reconcileTailFE(lastSnapById[openId]); drawWave(true); } }, FORCED_RECONCILE_EVERY_S*1000);
+
+    // full redraw safety net
+    setInterval(()=>drawWave(true), FORCED_FULL_REDRAW_EVERY_S*1000);
+  </script>
 </body>
 </html>
