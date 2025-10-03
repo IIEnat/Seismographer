@@ -177,7 +177,7 @@
 
         // Handle file uploads
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
+        e.preventDefault();
 
             const filesInput = document.getElementById('seedlink_files');
             const formData = new FormData();
@@ -197,38 +197,36 @@
             // Prepare timeline
             await initTimeline();
 
-            // Show query result overlay
-            const q = document.getElementById('queryResult');
-            q.style.display = 'block';
-
-            // Verify the new station JSON shape (timestamp, band/env lengths & values) 
+            // ---- Verify the new station JSON shape (timestamp, band/env lengths & values) ----
             try {
                 const json = await fetchJSON(`/playback_json/${uploadedFilenames.join(',')}`);
+                const q = document.getElementById('queryResult');
                 const n = Array.isArray(json?.stations) ? json.stations.length : 0;
                 q.innerHTML = `<b>Files:</b> ${uploadedFilenames.join(', ')}<br/>
                             <b>playback_json:</b> ${n} station object(s) received`;
                 console.log('playback_json sample:', json);
             } catch (err) {
-                q.innerHTML = 'playback_json fetch failed';
+                document.getElementById('queryResult').innerHTML =
+                'playback_json fetch failed';
             }
 
-            // Detect hour min/max RMS to seed the color scale (optional) 
+            // ---- Detect hour min/max RMS to seed the color scale (optional) ----
             try {
                 const stats = await fetchJSON(`/playback_stats/${uploadedFilenames.join(',')}`);
                 const vmin = stats?.min?.value, vmax = stats?.max?.value;
                 if (Number.isFinite(vmin) && Number.isFinite(vmax) && vmax > vmin) {
-                    q.innerHTML += `<br/><b>Detected Hour RMS Range</b><br/>
-                        Min: ${vmin.toFixed(1)} @ <code>${stats.min.id}</code> (${fmtAWST(stats.min.iso)})<br/>
-                        Max: ${vmax.toFixed(1)} @ <code>${stats.max.id}</code> (${fmtAWST(stats.max.iso)})`;
-                    const ok = window.confirm(
-                        `Detected hour min/max RMS:\n\nmin = ${vmin.toFixed(1)}\nmax = ${vmax.toFixed(1)}\n\nUse this as the 10-bin color range?`
-                    );
-                    if (ok) setColorRange(vmin, vmax);
+                out.innerHTML += `<br/><b>Detected Hour RMS Range</b><br/>
+                    Min: ${vmin.toFixed(1)} @ <code>${stats.min.id}</code> (${fmtAWST(stats.min.iso)})<br/>
+                    Max: ${vmax.toFixed(1)} @ <code>${stats.max.id}</code> (${fmtAWST(stats.max.iso)})`;
+                const ok = window.confirm(
+                    `Detected hour min/max RMS:\n\nmin = ${vmin.toFixed(1)}\nmax = ${vmax.toFixed(1)}\n\nUse this as the 10-bin color range?`
+                );
+                if (ok) setColorRange(vmin, vmax);
                 } else {
-                    q.innerHTML += '<br/>Could not detect min/max RMS';
+                out.innerHTML += '<br/>Could not detect min/max RMS';
                 }
             } catch {
-                q.innerHTML += '<br/>Stats error';
+                document.getElementById('queryResult').innerHTML += '<br/>Stats error';
             }
 
             // Initial render
