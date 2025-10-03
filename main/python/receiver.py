@@ -20,11 +20,12 @@ from scipy import signal
 from scipy.interpolate import PchipInterpolator
 
 import config as CFG
-from python.ingest import SimEasySeedLinkClient
 
-## ------------- NEW ------------- ## 
 from python.location_retrieval import get_location_or_fallback
-## ------------- NEW ------------- ## 
+import time
+
+## Changed this so that it imports real-time data instead of dummy data from ingest.py
+from obspy.clients.seedlink.easyseedlink import EasySeedLinkClient
 
 # ---------------------------- Data classes ------------------------------
 @dataclass
@@ -59,12 +60,10 @@ class StationProcessor:
     ) -> None:
         self.host, self.net, self.sta, self.chan, self.fs = host, net, sta, chan, float(fs)
 
-        ## ------------- NEW ------------- ## 
-        try:
-            self.lat, self.lon = get_location_or_fallback(self.host, timeout=0.4)
-        except Exception:
-            self.lat, self.lon = 0.0, 0.0
-        ## ------------- NEW ------------- ## 
+        # Start with nulls; we’ll fill them in opportunistically.
+        self.lat, self.lon = None, None
+        # Track last attempt so we don’t spam the device.
+        self._last_loc_attempt = 0.0  # epoch seconds
 
         # UI queues (~5 Hz)
         self.q = Queues(band=deque(maxlen=qsize), env=deque(maxlen=qsize))
@@ -203,7 +202,28 @@ class StationProcessor:
         return env5_cur
 
     # ---- main streaming method ----
+    def _maybe_refresh_location(self) -> None:
+        """
+        If we don’t yet have coordinates, try to fetch them at most once every 20s.
+        This keeps the UI responsive and eventually fills lat/lon when the API is ready.
+        """
+        if self.lat is not None and self.lon is not None:
+            return
+
+        now = time.time()
+        if now - self._last_loc_attempt < 5.0:
+            return
+        self._last_loc_attempt = now
+
+        try:
+            loc = get_location_or_fallback(self.host, timeout=(3.0, 10.0), fallback=None)
+            if loc:
+                self.lat, self.lon = loc
+        except Exception:
+            pass
+
     def process_chunk(self, trace: Trace) -> None:
+        self._maybe_refresh_location()
         x = np.asarray(trace.data, dtype=np.float64)
         if x.size == 0:
             return
@@ -283,10 +303,8 @@ class StationProcessor:
                 "env_len": len(self.q.env),
                 "env_min": self.env_min,
                 "env_max": self.env_max,
-                ## ------------- NEW ------------- ## 
                 "lat": self.lat,           
                 "lon": self.lon, 
-                ## ------------- NEW ------------- ## 
                 "band": [round(v, 3) for v in self.q.band],
                 "env":  [round(v, 3) for v in self.q.env],
                 "patch_epoch": self._patch_epoch,
@@ -310,7 +328,7 @@ def _run_client(proc: StationProcessor) -> None:
     def on_data(trace: Trace) -> None:
         proc.process_chunk(trace)
 
-    c = SimEasySeedLinkClient(proc.host, 18000, fs=CFG.FS)
+    c = EasySeedLinkClient(proc.host, 18000)
     c.on_data = on_data
     c.select_stream(proc.net, proc.sta, CFG.CHAN)
     c.run()  # blocking; run in a daemon thread
