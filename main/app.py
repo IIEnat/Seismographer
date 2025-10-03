@@ -132,11 +132,6 @@ def raw_dump_all():
         "stations": out
     })
 
-# ---------------------------- Blueprints --------------------------------
-
-app.register_blueprint(create_playback_blueprint(upload_dir=UPLOAD_DIR, awst_tz=AWST))
-
-
 # -------------------------------- Entrypoint -----------------------------
 
 if __name__ == "__main__":
