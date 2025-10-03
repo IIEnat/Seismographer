@@ -1,127 +1,143 @@
-# python/location_retrieval.py
+#!/usr/bin/env python3
+"""
+location_retrieval.py
+
+Retrieve 'instrument/earthLocation' from a seismometer's SOH endpoint.
+
+Public functions:
+    - get_raw_earthlocation(host) -> dict | None
+    - get_location(host) -> (lat, lon) | None
+    - get_location_or_fallback(host, fallback=None) -> (lat, lon) | None
+
+CLI examples:
+    python3 -m python.location_retrieval --host 192.168.0.33
+    python3 -m python.location_retrieval --host 192.168.0.33 --latlon
+"""
+
 from __future__ import annotations
-import json
-import re
-from typing import Any, Dict, Iterable, Tuple, Optional
+import argparse, json, re, requests
+from typing import Any, Optional, List, Tuple
 
-# Prefer 'requests', fall back to urllib so this still works without extra deps.
-try:
-    import requests  # type: ignore
-    _HAS_REQUESTS = True
-except Exception:
-    _HAS_REQUESTS = False
+KEY = "instrument/earthLocation"
 
-if not _HAS_REQUESTS:
-    from urllib.request import urlopen  # type: ignore
-    from urllib.error import URLError  # type: ignore
-
-# Example value: "31.978620S 115.816783E 13m"
-# We want: (-31.978620, 115.816783)
-_EARTH_LOC_RE = re.compile(
+# Regex parser for "31.978712S 115.816727E -12m"
+_LOC_RE = re.compile(
     r"""
-    ^\s*
-    (?P<lat>\d+(?:\.\d+)?)\s*(?P<lat_hemi>[NS])   # latitude with N/S
+    (?P<lat>-?\d+(?:\.\d+)?)\s*(?P<lat_hemi>[NS])
     \s+
-    (?P<lon>\d+(?:\.\d+)?)\s*(?P<lon_hemi>[EW])   # longitude with E/W
-    (?:\s+(?P<elev>\-?\d+(?:\.\d+)?))?m?          # optional elevation in meters
-    \s*$
+    (?P<lon>-?\d+(?:\.\d+)?)\s*(?P<lon_hemi>[EW])
+    (?:\s+(?P<elev>-?\d+(?:\.\d+)?)\s*m)?
     """,
-    re.VERBOSE | re.IGNORECASE,
+    re.IGNORECASE | re.VERBOSE,
 )
 
-def _parse_earth_location(value: str) -> Tuple[float, float]:
-    """
-    Parse strings like '31.978620S 115.816783E 13m' into signed (lat, lon).
-    South/West => negative.
-    """
-    m = _EARTH_LOC_RE.match(value.strip())
-    if not m:
-        raise ValueError(f"Unrecognized earthLocation format: {value!r}")
+def find_key_path(obj: Any, target: str, path: Optional[List[str]] = None):
+    """DFS to find the first occurrence of `target` key in nested dict/list."""
+    if path is None:
+        path = []
+    if isinstance(obj, dict):
+        if target in obj:
+            return path + [target], obj[target]
+        for k, v in obj.items():
+            found_path, found_val = find_key_path(v, target, path + [k])
+            if found_path is not None:
+                return found_path, found_val
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            found_path, found_val = find_key_path(item, target, path + [f"[{i}]"])
+            if found_path is not None:
+                return found_path, found_val
+    return None, None
 
+def _parse_latlon(value: str) -> Optional[Tuple[float, float]]:
+    """Parse '31.978712S 115.816727E -12m' into (-31.978712, 115.816727)."""
+    m = _LOC_RE.search(value)
+    if not m:
+        return None
     lat = float(m.group("lat"))
     lon = float(m.group("lon"))
-
     if m.group("lat_hemi").upper() == "S":
-        lat = -lat
+        lat = -abs(lat)
     if m.group("lon_hemi").upper() == "W":
-        lon = -lon
+        lon = -abs(lon)
+    return (lat, lon)
 
-    return lat, lon
+def _fetch_soh_with_quick_then_slow(host: str) -> Optional[dict]:
+    """
+    Try a quick fetch first; if that fails, try one slower pass.
+    Returns parsed JSON dict or None.
+    """
+    urls = [
+        f"http://{host}/api/v1/instruments/soh",
+        f"http://{host}/api/v1/instruments/soh/",  # some firmwares need the slash
+    ]
+    headers = {"Connection": "close", "Accept": "application/json, */*;q=0.8"}
 
-def _walk_items(obj: Any) -> Iterable[tuple[str, Any]]:
-    """
-    Walk a nested JSON-like structure (dicts/lists) yielding (key, value)
-    for dict entries at any depth.
-    """
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            yield k, v
-            # recurse
-            for kv in _walk_items(v):
-                yield kv
-    elif isinstance(obj, list):
-        for it in obj:
-            for kv in _walk_items(it):
-                yield kv
+    # 1) quick attempt (fast connect & read)
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=(2.0, 3.0), stream=False)
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            pass  # try the next URL / slower pass
 
-def _find_earth_location_blob(root: Any) -> Optional[Dict[str, Any]]:
-    """
-    Search the parsed JSON for a key == 'instrument/earthLocation'.
-    Return its value if it's a dict like {"value": "...", "time": "..."}.
-    """
-    for k, v in _walk_items(root):
-        if k == "instrument/earthLocation" and isinstance(v, dict):
-            # Expect {"value": "31.978620S 115.816783E 13m", "time": "..."}
-            return v
+    # 2) slower attempt (some boxes are slow on first hit)
+    last_err = None
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=(3.0, 10.0), stream=False)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            last_err = e
+
     return None
 
-def fetch_location_from_seismometer(host: str, timeout: float = 2.5) -> tuple[float, float]:
+# -------- Public API --------
+def get_raw_earthlocation(host: str, timeout: Tuple[float, float] = (3.0, 5.0)) -> Optional[dict]:
     """
-    GET http://<host>/api/v1/instruments/soh, locate 'instrument/earthLocation',
-    parse its 'value' into (lat, lon). Raises on failure.
-    'timeout' applies to both connect and read.
+    Return the raw earthLocation dict {'value':..., 'time':...} or None.
+    (timeout param kept for signature-compat; helper uses its own quick/slow.)
     """
-    import json as _json  # local alias to avoid shadowing
-    url = f"http://{host}/api/v1/instruments/soh"
+    data = _fetch_soh_with_quick_then_slow(host)
+    if data is None:
+        return None
 
-    if _HAS_REQUESTS:
-        # Use (connect_timeout, read_timeout) so connect fails fast off-LAN.
-        r = requests.get(url, timeout=(timeout, timeout))  # type: ignore
-        r.raise_for_status()
-        payload = r.json()
+    _, val = find_key_path(data, KEY)
+    if isinstance(val, dict) and "value" in val:
+        return val
+    return None
+
+def get_location(host: str, timeout: Tuple[float, float] = (3.0, 5.0), fallback: Optional[Tuple[float, float]] = None) -> Optional[Tuple[float, float]]:
+    """Return (lat, lon) or None (or fallback if provided)."""
+    earth = get_raw_earthlocation(host, timeout=timeout)
+    if earth and isinstance(earth.get("value"), str):
+        parsed = _parse_latlon(earth["value"])
+        if parsed:
+            return parsed
+    return fallback
+
+def get_location_or_fallback(host: str, timeout: Tuple[float, float] = (3.0, 5.0), fallback=None):
+    """Alias for get_location (for receiver.py compatibility)."""
+    return get_location(host, timeout=timeout, fallback=fallback)
+
+# -------- CLI for debugging --------
+def _cli():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="192.168.0.33")
+    parser.add_argument("--latlon", action="store_true", help="Show only lat/lon")
+    args = parser.parse_args()
+
+    if args.latlon:
+        loc = get_location(args.host, fallback=None)
+        print("Location:", loc if loc else "not available")
     else:
-        try:
-            with urlopen(url, timeout=timeout) as resp:  # type: ignore
-                data = resp.read()
-            payload = _json.loads(data.decode("utf-8", errors="replace"))
-        except Exception as e:  # URLError etc.
-            raise ConnectionError(f"Failed to GET {url}: {e}") from e
+        obj = get_raw_earthlocation(args.host)
+        if obj:
+            print(json.dumps(obj, indent=2))
+        else:
+            print("not available")
 
-    blob = _find_earth_location_blob(payload)
-    if not blob or "value" not in blob:
-        raise KeyError("instrument/earthLocation key not found in SOH payload")
-
-    return _parse_earth_location(str(blob["value"]))
-
-
-def get_location_or_fallback(host: str, timeout: float = 0.4) -> tuple[float, float]:
-    """
-    Try the live device first with a small timeout (fast fail when off-LAN);
-    if anything goes wrong, return a hard-coded fallback.
-    """
-    try:
-        return fetch_location_from_seismometer(host, timeout=timeout)
-    except Exception:
-        coords = _FALLBACK_COORDS.get(host)
-        if coords is not None:
-            return coords
-        # Final safety: don't crash startup — fall back to (0,0)
-        return (0.0, 0.0)
-    
-# ---------------- Hard-coded fallbacks ----------------
-_FALLBACK_COORDS: Dict[str, Tuple[float, float]] = {
-    # Example entry (uncomment and edit as needed):
-    "192.168.0.27": (-31.35, 115.92),
-    "192.168.0.32": (-31.40, 115.96),
-    "192.168.0.33": (-31.45, 115.98),
-}
+if __name__ == "__main__":
+    _cli()
