@@ -76,16 +76,18 @@
     const map = L.map('map', { preferCanvas:true });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
       { maxZoom:19, attribution:'© OpenStreetMap' }).addTo(map);
-    map.setView([-31.35,115.92],10);
+    map.setView([-31.35,115.92], 10);
     requestAnimationFrame(()=>map.invalidateSize());
     window.addEventListener('resize', ()=>map.invalidateSize());
 
     const stationLayer = L.layerGroup().addTo(map), markers = {};
     function ensureMarker(s){
       if (markers[s.id]) return markers[s.id];
+
       const circle = L.circle([s.lat,s.lon], {
-        radius:1000, color:'#222', weight:2, fillColor:colorForNorm(s.norm), fillOpacity:0.75
+        radius:10, color:'#222', weight:2, fillColor:colorForNorm(s.norm), fillOpacity:0.75
       });
+
       const dot = L.circleMarker([s.lat,s.lon], { radius:6, color:'#000', fillColor:'#000', fillOpacity:1, weight:1 });
       const tip = L.tooltip({ permanent:true, direction:'top', offset:[0,-8], className:'rmsTip' })
         .setContent(`${s.id}<br/>env ${fmt(s.env_series?.at(-1))} (norm ${fmtPct(s.norm)})`);
@@ -251,7 +253,7 @@
 
       if (!firstFit && stations.length){
         const b = L.latLngBounds(stations.map(s=>[s.lat,s.lon]));
-        if (b.isValid()) map.fitBounds(b,{padding:[30,30],maxZoom:12});
+        if (b.isValid()) map.fitBounds(b,{padding:[30,30],maxZoom:19});
         firstFit = true;
         openId = stations[0].id;
         document.getElementById('selectedSta').textContent = openId;
