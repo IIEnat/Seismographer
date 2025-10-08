@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 receiver.py — 30 s buffered start, then drip at 5 Hz.
 Seam is smoothed exactly once per block boundary using look-ahead into the next
@@ -16,7 +17,6 @@ All tunables are static in config.py.
 - Drips precomputed 5 Hz series to the UI at a rate proportional to input chunk size.
 - Coordinates are resolved lazily from the device API (with backoff) to populate the UI.
 """
-from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass

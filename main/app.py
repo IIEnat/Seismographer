@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 app.py — Minimal Flask + Socket.IO app (Band-pass live + Playback + /raw)
 
@@ -9,7 +10,6 @@ app.py — Minimal Flask + Socket.IO app (Band-pass live + Playback + /raw)
 - Serves both live and playback routes via Flask
 - Exposes a '/raw' JSONN endpoint for latest raw seismic snapshot
 """
-from __future__ import annotations
 
 import os, glob
 from collections import defaultdict

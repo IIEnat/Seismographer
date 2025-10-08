@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 location_retrieval.py
 
@@ -19,7 +20,7 @@ CLI examples:
 - Parses values formatted like "31.978712S 115.816727E -12m".
 - Exposes convenience helpers that return (lat, lon) floats with sensible fallbacks.
 """
-from __future__ import annotations
+
 import argparse, json, re, requests
 from typing import Any, Optional, List, Tuple
 

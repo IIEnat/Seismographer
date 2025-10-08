@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 @file ingest.py
 @brief Ingest layer for the Seismographer project.
@@ -14,7 +15,7 @@ Supported ingest classes:
 
 Each ingest source ultimately produces ObsPy `Trace` objects.
 """
-from __future__ import annotations
+
 import threading, time
 from dataclasses import dataclass
 from datetime import datetime, timezone

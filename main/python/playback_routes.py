@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 @file playback_routes.py
 @brief Flask Blueprint providing all playback endpoints.
@@ -32,7 +33,6 @@ Implementation notes:
 - Provides safe coordinate defaults (so the UI map never breaks).
 - Efficient per-second RMS stats via `numpy.bincount` for scalability.
 """
-from __future__ import annotations
 
 import os
 import glob
