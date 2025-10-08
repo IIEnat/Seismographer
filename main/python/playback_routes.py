@@ -1,17 +1,18 @@
-# playback_routes.py
 from __future__ import annotations
 
-import os
-import glob
-from typing import Dict, List, Tuple
+import os, glob, io
 from collections import defaultdict
 from datetime import datetime, timezone
+from math import floor, ceil
+from typing import Dict, List, Tuple
 
 import numpy as np
-from flask import Blueprint, current_app, jsonify, render_template, request
+from scipy import signal
+from flask import Blueprint, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 from obspy import read as obspy_read, Stream, Trace
-from math import floor, ceil
+import config as CFG
+
 
 def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
     """
@@ -172,10 +173,124 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
             lat, lon = _hardcoded_latlon_for_trace(tr)
             if lat is not None and lon is not None:
                 return (lat, lon)
-        return (-31.35, 115.92)
+        return (-31.35, 115.92)    
+    
+    def compute_rms(x) -> float:
+        arr = np.asarray(x, dtype=float)
+        if arr.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(arr * arr)))
+
+    def _design_bandpass(fs: float, band: tuple[float, float]):
+        lo, hi = band
+        nyq = max(1e-12, 0.5 * fs)
+        wn = (max(lo, 1e-4) / nyq, max(hi, 2e-4) / nyq)
+        return signal.butter(4, wn, btype="bandpass", output="sos")
+
+    def _bandpass_sos(x: np.ndarray, sos, zi=None):
+        y, zi_out = signal.sosfilt(sos, np.asarray(x, dtype=np.float64), zi=zi)
+        return y.astype(float), zi_out
+
+    def _env_native(band_native: np.ndarray, fs: float) -> np.ndarray:
+        if band_native.size == 0:
+            return np.empty(0, dtype=float)
+        env = np.abs(signal.hilbert(band_native.astype(np.float64)))
+        nyq = max(1e-6, 0.5 * fs)
+        wc = min(0.3 / nyq, 0.99)  # gentle smoothing of the envelope
+        sos = signal.butter(2, wc, btype="low", output="sos")
+        env = signal.sosfiltfilt(sos, env)
+        return np.maximum(env, 0.0).astype(float)
+
+    def _decimate_to_tgt(x: np.ndarray, fs: float, tgt_hz: float) -> np.ndarray:
+        if x.size == 0:
+            return np.empty(0, dtype=float)
+        fs_i = int(round(fs))
+        tgt_i = int(round(tgt_hz))
+        if fs_i > tgt_i and fs_i % tgt_i == 0:
+            q = fs_i // tgt_i
+            return signal.decimate(x.astype(np.float64), q, ftype="iir", zero_phase=True).astype(float)
+        # fallback rational resample
+        from math import gcd
+        up, down = tgt_i, fs_i
+        g = gcd(up, down) if down else 1
+        up //= max(g, 1); down //= max(g, 1)
+        return signal.resample_poly(x.astype(np.float64), up, down).astype(float)
+
+    def process_samples_to_5hz(samples: np.ndarray, fs: float) -> dict:
+        """raw -> band-pass -> hilbert envelope -> lp smooth -> decimate to TARGET_HZ"""
+        samples = np.asarray(samples, dtype=np.float64)
+        sos = _design_bandpass(fs, CFG.BAND)
+        band_native, _ = _bandpass_sos(samples, sos, zi=signal.sosfilt_zi(sos) * 0.0)
+        env_native = _env_native(band_native, fs)
+
+        band_5 = _decimate_to_tgt(band_native, fs, CFG.TARGET_HZ)
+        env_5  = _decimate_to_tgt(env_native,  fs, CFG.TARGET_HZ)
+        n = min(band_5.size, env_5.size)
+        if n:
+            band_5 = band_5[:n]
+            env_5  = env_5[:n]
+
+        return {
+            "band": [round(v, 3) for v in band_5],
+            "env":  [round(v, 3) for v in env_5],
+            "env_min": float(np.min(env_5)) if env_5.size else None,
+            "env_max": float(np.max(env_5)) if env_5.size else None,
+            "target_hz": float(CFG.TARGET_HZ),
+        }
 
     # ---------- Routes ----------
-    @bp.route("/playback", methods=["GET", "POST"])
+# --- ROUTES: split GET and POST cleanly, use bp only ---
+
+    @bp.route("/playback", methods=["GET"])
+    def playback_get():
+        return render_template("playback.html")
+
+    @bp.route("/playback", methods=["POST"])
+    def upload_and_process_playback():
+        files = request.files.getlist("seedlink_file")
+        if len(files) != 1:
+            return ("Only one file may be uploaded", 400)
+
+        f = files[0]
+        filename = (f.filename or "").strip()
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        # accept ONLY .miniseed
+        if ext != "miniseed":
+            return ("Unsupported file type; please upload a .miniseed file", 415)
+
+        # fresh batch: clear previous uploads, then save this file to disk
+        clear_uploads_folder()
+        from werkzeug.utils import secure_filename
+        safe = secure_filename(filename)
+        dest = os.path.join(upload_dir, safe)
+        f.stream.seek(0)
+        f.save(dest)
+
+        # Optional: immediate preview processing (so UI can show a quick result)
+        try:
+            st = obspy_read(dest)
+            st.merge(fill_value="interpolate")
+            tr = st[0]
+            data = tr.data.astype(np.float64)
+            fs = float(tr.stats.sampling_rate)
+            preview = process_samples_to_5hz(data, fs)
+
+            rid = {
+                "network": getattr(tr.stats, "network", ""),
+                "station": getattr(tr.stats, "station", ""),
+                "location": getattr(tr.stats, "location", ""),
+                "channel": getattr(tr.stats, "channel", ""),
+            }
+            preview["rms_env"] = compute_rms(np.array(preview["env"], dtype=float))
+            preview["id"] = f'{rid["network"]}.{rid["station"]}.{rid["location"]}.{rid["channel"]}'
+        except Exception:
+            # if preview fails, still let the client proceed to timeline/data endpoints
+            preview = {}
+
+        # IMPORTANT: return filenames saved to disk — front-end will use these
+        return jsonify({"status": "uploaded", "filenames": [safe], **preview})
+
+
     def playback():
         """GET: render UI. POST: accept exactly ONE MiniSEED file and return its filename."""
         if request.method == "POST":
@@ -196,7 +311,8 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
             except Exception as e:
                 return jsonify({"status": "error", "message": f"Failed to save file: {e}"}), 500
 
-            return jsonify({"status": "uploaded", "filenames": [filename]})
+            return jsonify({"status": "uploaded", "filename": filename, **out})
+
 
         return render_template("playback.html")
 
