@@ -1,7 +1,34 @@
-# Seismographer - Real Time Seismic Imaging 
+# Seismographer - Real Time Seismic Imaging
 
 ## Context
-Seismographer was developed as a group project assigned under [CITS3200: Professional Computing](https://teaching.csse.uwa.edu.au/units/CITS3200/) at [The University of Western Australia](https://www.uwa.edu.au/) during the second semester of 2025.
+Seismographer was developed as a group project assigned as part of the unit [CITS3200: Professional Computing](https://teaching.csse.uwa.edu.au/units/CITS3200/) at [The University of Western Australia](https://www.uwa.edu.au/) during the second semester of 2025.  The project proposal was submitted by a client in the Physics department who needed data from a seismic array at the Gingin High Optical Power Facility collected, processed, and graphically displayed.
+
+## Project Team
+| Student Name | Student Number | GitHub Username |
+|--------------|----------------|-----------------|
+| Raynard      | 24006703       | IIEnat          |
+| Yutong       | 23723494       | amiwaffletoday  |
+| Jimmy        | 23661316       | JimmyTanUWA     |
+| Kathleen     | 24091081       | kathisabella    |
+| Andrew       | 23384163       | Andrew-Biggins1 |
+| Aaron        | 23815248       | Attempt27       |
+
+## Project Setup
+To **install dependancies** change directory to ```/main/``` and run:
+```
+$ pip install -r requirements.txt
+```
+
+To **run** the app, from the same ```/main/``` directory run:
+```
+$ python3 app.py
+```
+
+## License
+This project is licensed under the terms of the GNU General Public License v3.0.  See [COPYING.txt](COPYING.txt) for more information.
+
+
+
 
 ## Purpose
 Seismographer is an interactive tool that visualises real-time seismic activity using live data feeds. Built for researchers for monitoring gravitational waves, this project translates seismic signals into intuitive color-coded maps, providing a live, top-down view of ground motion as it happens.
@@ -18,28 +45,8 @@ A web-app built using Flask and typical webdev technologies:
 - Obspy, numpy, seedlink for data aggregation in Python.
 - HTML, CSS, JS for frontend.
 
-## Project Team
-| Student Name | Student Number | GitHub Username |
-|--------------|----------------|-----------------|
-| Raynard      | 24006703       | IIEnat          |
-| Yutong       | 23723494       | amiwaffletoday  |
-| Jimmy        | 23661316       | JimmyTanUWA     |
-| Kathleen     | 24091081       | kathisabella    |
-| Andrew       | 23384163       | Andrew-Biggins1 |
-| Aaron        | 23815248       | Attempt27       |
-
 ## Running Tests
 
-## Project Setup
-To **install dependancies** change directory to ```/main/``` and run:
-```
-$ pip install -r requirements.txt
-```
-
-To **run** the app, from the same ```/main/``` directory run:
-```
-$ python3 app.py
-```
 
 ## Project Structure
 ```
