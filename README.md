@@ -31,25 +31,54 @@ $ pip install -r requirements.txt
 
 To **run** the app, from the same ```/main/``` directory run:
 ```
-$ flask run
+$ python3 app.py
 ```
 
 ## Project Structure
 ```
 ├── README.md
-├── main/
-│   ├── app.py
-│   ├── config.py
-│   ├── python/
-│   │   ├── ingest.py
-│   │   ├── location_retrieval.py
-│   │   └── receiver.py
-│   ├── requirements.txt
-│   ├── static/
-│   │   └── css/
-│   │       └── global.css
-│   ├── templates/
-│   │   ├── home.html
-│   │   ├── navbar.html
-│   │   └── playback.html
+└── main/
+    ├── app.py
+    ├── config.py
+    ├── python/
+    │   ├── ingest.py
+    │   ├── location_retrieval.py
+    │   ├── playback_routes.py
+    │   └── receiver.py
+    ├── requirements.txt
+    ├── static/
+    │   └── css/
+    │       └── global.css
+    └── templates/
+        ├── home.html
+        ├── navbar.html
+        └── playback.html
 ```
+
+## System Overview
+- **Ingest (receiver.py, ingest.py):** Connects to SeedLink or synthetic generators, processes signals into band/envelope streams.
+- **Processing:** Each station is handled by a StationProcessor that applies band-pass filtering, envelope detection, seam smoothing, and downsampling.
+- **Backend (app.py):** Flask + Socket.IO app that streams live updates, serves HTML templates, and provides a `/raw` diagnostics endpoint.
+- **Playback (playback_routes.py):** Blueprint for uploading MiniSEED files, generating timelines, per-station waveforms, and RMS stats.
+- **Frontend (templates + static):** Interactive Leaflet map with color-coded station bubbles and a playback UI.
+
+## API Endpoints
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Live seismic map UI |
+| `/raw` | GET | Latest raw seismic samples per station (JSON) |
+| `/playback` | GET/POST | Playback UI (upload MiniSEED file) |
+| `/playback_json/<filenames>` | GET | Per-station compact JSON (band/envelope) |
+| `/playback_timeline/<filenames>` | GET | Global start/end times + slider steps |
+| `/playback_data/<filenames>/<slider>` | GET | Per-station RMS for current second |
+| `/playback_wave/<filenames>/<slider>/<station_id>` | GET | 1-second waveform slice |
+| `/playback_stats/<filenames>` | GET | Global min/max RMS across dataset |
+
+## Configuration
+All tunables are in `config.py`:
+- `HOSTS`, `NET`, `CHAN`: Station connectivity
+- `FS`, `BAND`, `TARGET_HZ`: Sampling and filter parameters
+- `BATCH_SECONDS`, `RAW_SECONDS`: Buffering and diagnostics
+- `PATCH_TAIL_SECONDS`, `PATCH_INTERVAL_SECONDS`: Seam smoothing
+- `STARTUP_SECONDS`: Countdown shown to frontend
+- `SPEED_FACTOR`: Simulation speed control
