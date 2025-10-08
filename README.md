@@ -13,86 +13,58 @@ Seismographer was developed as a group project assigned as part of the unit [CIT
 | Andrew       | 23384163       | Andrew-Biggins1 |
 | Aaron        | 23815248       | Attempt27       |
 
+## Summary
+Seismographer is a Flask web application developed for a Linux system that visualises real-time and historical seismic activity from seismometers.  The main page provides a live, top-down view of ground motion as it happens by displaying a map of seismic activity using a colour scale for each seismometer's readings.  This live page allows individual seismometers to be selected to simultaneously view a graph of the selected seismometer's readings.  A playback page also allows `.miniseed` and `.seed` files that store data from seismometers to be uploaded and played, displaying the same graphs as in the main page.
+
 ## Project Setup
-To **install dependancies** change directory to ```/main/``` and run:
+To **install dependancies** from ```main/``` run:
 ```
 $ pip install -r requirements.txt
 ```
 
-To **run** the app, from the same ```/main/``` directory run:
+To **run** the app, from ```main/``` run:
 ```
 $ python3 app.py
 ```
 
-## License
-This project is licensed under the terms of the GNU General Public License v3.0.  See [COPYING.txt](COPYING.txt) for more information.
+The web app can then be accessed from `https://127.0.0.1:5000`.
 
-
-
-
-## Purpose
-Seismographer is an interactive tool that visualises real-time seismic activity using live data feeds. Built for researchers for monitoring gravitational waves, this project translates seismic signals into intuitive color-coded maps, providing a live, top-down view of ground motion as it happens.
-
-## Key Features 
-- Real-time Data: Connects to seismometers using SeedLink and processes streams via ObsPy.  
-- Dynamic Mapping: Visualizes ground motion on an interactive map.  
-- Color-coded Intensity: Seismic intensity is rendered using color gradients for easy interpretation.  
-- Live Updates: The map auto-refreshes as new seismic data arrives.  
-- Customisable Views: Filter by station or time window.  
-
-## Technologies Used
-A web-app built using Flask and typical webdev technologies:
-- Obspy, numpy, seedlink for data aggregation in Python.
-- HTML, CSS, JS for frontend.
-
-## Running Tests
-
+More detailed setup instructions can be found in [docs/user_manual.md](docs/user_manual.md).
 
 ## Project Structure
 ```
-├── README.md
-└── main/
-    ├── app.py
-    ├── config.py
-    ├── python/
-    │   ├── ingest.py
-    │   ├── location_retrieval.py
-    │   ├── playback_routes.py
-    │   └── receiver.py
-    ├── requirements.txt
-    ├── static/
-    │   └── css/
-    │       └── global.css
-    └── templates/
-        ├── home.html
-        ├── navbar.html
-        └── playback.html
+Seismographer/
+├── COPYING.txt                             # Project license (GNU GPL v3.0)
+├── README.md                               # Project overview (this file)
+├── docs/                                   # Documentation
+│   ├── developer_documentation.md          # Details on implementation for future developers
+│   ├── technical_user_documentation.md     # Outlines information relating to seismic data 
+│   └── user_manual.md                      # How to run and use the app
+└── main/                                   # Main application source code
+    ├── app.py                              # Flask web application entry point
+    ├── config.py                           # Configuration settings for data sources and processing
+    ├── python/                             # Core backend modules
+    │   ├── ingest.py                       # Signal processing (filtering, envelope detection)
+    │   ├── location_retrieval.py           # Station location management and retrieval
+    │   ├── playback_routes.py              # Playback functionality and endpoints
+    │   └── receiver.py                     # Data ingestion from SeedLink or synthetic sources
+    ├── requirements.txt                    # Python dependencies
+    ├── static/                             # Static files for frontend
+    │   └── css/                            # CSS files
+    │       └── global.css                  # Global stylesheet
+    ├── templates/                          # HTML templates for web pages
+    │   ├── home.html                       # Main map and live view
+    │   ├── navbar.html                     # Navigation bar
+    │   └── playback.html                   # Playback page
+    └── uploads/                            # Directory for uploaded .miniseed and .seed files
 ```
 
-## System Overview
-- **Ingest (receiver.py, ingest.py):** Connects to SeedLink or synthetic generators, processes signals into band/envelope streams.
-- **Processing:** Each station is handled by a StationProcessor that applies band-pass filtering, envelope detection, seam smoothing, and downsampling.
-- **Backend (app.py):** Flask + Socket.IO app that streams live updates, serves HTML templates, and provides a `/raw` diagnostics endpoint.
-- **Playback (playback_routes.py):** Blueprint for uploading MiniSEED files, generating timelines, per-station waveforms, and RMS stats.
-- **Frontend (templates + static):** Interactive Leaflet map with color-coded station bubbles and a playback UI.
+## Further Documentation
+For the basics on how to use the app see [docs/user_manual.md](docs/user_manual.md).
 
-## API Endpoints
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Live seismic map UI |
-| `/raw` | GET | Latest raw seismic samples per station (JSON) |
-| `/playback` | GET/POST | Playback UI (upload MiniSEED file) |
-| `/playback_json/<filenames>` | GET | Per-station compact JSON (band/envelope) |
-| `/playback_timeline/<filenames>` | GET | Global start/end times + slider steps |
-| `/playback_data/<filenames>/<slider>` | GET | Per-station RMS for current second |
-| `/playback_wave/<filenames>/<slider>/<station_id>` | GET | 1-second waveform slice |
-| `/playback_stats/<filenames>` | GET | Global min/max RMS across dataset |
+For details on the app's architecture, backend modules, data flow, and code structure see [developer_documentation.md](developer_documentation.md).
 
-## Configuration
-All tunables are in `config.py`:
-- `HOSTS`, `NET`, `CHAN`: Station connectivity
-- `FS`, `BAND`, `TARGET_HZ`: Sampling and filter parameters
-- `BATCH_SECONDS`, `RAW_SECONDS`: Buffering and diagnostics
-- `PATCH_TAIL_SECONDS`, `PATCH_INTERVAL_SECONDS`: Seam smoothing
-- `STARTUP_SECONDS`: Countdown shown to frontend
-- `SPEED_FACTOR`: Simulation speed control
+For technical specifications on the seismic data and its processing see [technical_user_documentation.md](technical_user_documentation.md)
+
+## License
+This project is licensed under the terms of the GNU General Public License v3.0.  See [COPYING.txt](COPYING.txt) for more information.
