@@ -1,4 +1,9 @@
 # Seismographer - Real Time Seismic Imaging 
+
+## Context
+Seismographer was developed as a group project assigned under [CITS3200: Professional Computing](https://teaching.csse.uwa.edu.au/units/CITS3200/) at [The University of Western Australia](https://www.uwa.edu.au/) during the second semester of 2025.
+
+## Purpose
 Seismographer is an interactive tool that visualises real-time seismic activity using live data feeds. Built for researchers for monitoring gravitational waves, this project translates seismic signals into intuitive color-coded maps, providing a live, top-down view of ground motion as it happens.
 
 ## Key Features 
@@ -14,14 +19,16 @@ A web-app built using Flask and typical webdev technologies:
 - HTML, CSS, JS for frontend.
 
 ## Project Team
-| Student Name | Student Number | GitHub Username   |
-|--------------|----------------|-------------------|
-| Raynard      | 24006703       | IIEnat            |
-| Yutong       | 23723494       | amiwaffletoday    |
-| Jimmy        | 23661316       | JimmyTanUWA       |
-| Aaron        | 23815248       | Attempt27         |
-| Andrew       | 23384163       | Andrew-Biggins1   |
-| Kathleen     | 24091081       | kathisabella      |
+| Student Name | Student Number | GitHub Username |
+|--------------|----------------|-----------------|
+| Raynard      | 24006703       | IIEnat          |
+| Yutong       | 23723494       | amiwaffletoday  |
+| Jimmy        | 23661316       | JimmyTanUWA     |
+| Kathleen     | 24091081       | kathisabella    |
+| Andrew       | 23384163       | Andrew-Biggins1 |
+| Aaron        | 23815248       | Attempt27       |
+
+## Running Tests
 
 ## Project Setup
 To **install dependancies** change directory to ```/main/``` and run:
