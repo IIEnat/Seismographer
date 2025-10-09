@@ -5,11 +5,13 @@ HOSTS = ["192.168.0.33", "192.168.0.32", "192.168.0.27"]
 NET = "GG"
 CHAN = "HNZ"
 
+# Simulate flag
+SIMULATE = 'auto'
 # Demo coordinates (override with real values if available)
 COORDS = {
-    "WAR27": (-31.35, 115.92),
-    "WAR32": (-31.40, 115.96),
-    "WAR33": (-31.45, 115.98),
+    "FAKE1": (-31.35, 115.92),
+    "FAKE2": (-31.40, 115.96),
+    "FAKE3": (-31.45, 115.98),
 }
 
 # ---- Signal processing ----
