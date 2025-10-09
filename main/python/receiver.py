@@ -1,346 +1,365 @@
-# --- START OF python/receiver.py ---
-"""
-receiver.py — 30 s buffered start, then drip at 5 Hz.
-Seam is smoothed exactly once per block boundary using look-ahead into the next
-block head; no periodic re-patching (prevents saw-tooth artifacts).
-
-All tunables are static in config.py.
-"""
+# playback_routes.py
 from __future__ import annotations
 
-from collections import deque
-from dataclasses import dataclass
-from threading import Lock, Thread
-from typing import List, Optional, Tuple
-from math import gcd
+import os
+import glob
+from typing import Dict, List, Tuple
+from collections import defaultdict
+from datetime import datetime, timezone
 
 import numpy as np
-from obspy.core.trace import Trace
-from scipy import signal
-from scipy.interpolate import PchipInterpolator
+from flask import Blueprint, current_app, jsonify, render_template, request
+from werkzeug.utils import secure_filename
+from obspy import read as obspy_read, Stream, Trace
+from math import floor, ceil
 
-import config as CFG
-
-from python.location_retrieval import get_location_or_fallback
-import time
-
-## Changed this so that it imports real-time data instead of dummy data from ingest.py
-from obspy.clients.seedlink.easyseedlink import EasySeedLinkClient
-
-# ---------------------------- Data classes ------------------------------
-@dataclass
-class Queues:
-    band: deque[float]
-    env: deque[float]
-
-
-# --------------------------- Core processor -----------------------------
-class StationProcessor:
+def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
     """
-    Startup
-      • Buffer BATCH_SECONDS of native samples (strict).
-      • Compute 5 Hz band-pass and 5 Hz envelope for that block.
-      • Then ready=True and we start dripping at TARGET_HZ.
-
-    Streaming
-      • For each completed block, drip its precomputed 5 Hz series.
-      • At each block boundary, smooth the seam once using prev tail + next head.
+    Factory that returns a Blueprint encapsulating all playback endpoints and helpers.
     """
+    bp = Blueprint("playback", __name__)
 
-    def __init__(
-        self,
-        host: str,
-        net: str,
-        sta: str,
-        chan: str,
-        fs: float = CFG.FS,
-        band: Tuple[float, float] = CFG.BAND,
-        qsize: int = CFG.QSIZE,
-        raw_seconds: int = CFG.RAW_SECONDS,
-    ) -> None:
-        self.host, self.net, self.sta, self.chan, self.fs = host, net, sta, chan, float(fs)
-
-        # Start with nulls; we’ll fill them in opportunistically.
-        self.lat, self.lon = None, None
-        # Track last attempt so we don’t spam the device.
-        self._last_loc_attempt = 0.0  # epoch seconds
-
-        # UI queues (~5 Hz)
-        self.q = Queues(band=deque(maxlen=qsize), env=deque(maxlen=qsize))
-
-        # RAW ring buffer (native fs) for diagnostics/export
-        self._raw = deque(maxlen=int(max(1.0, self.fs) * raw_seconds))
-
-        # Band-pass (4th-order Butterworth)
-        lo, hi = band
-        wn = (max(lo, 1e-4) / (self.fs * 0.5), max(hi, 2e-4) / (self.fs * 0.5))
-        self._sos = signal.butter(4, wn, btype="bandpass", output="sos")
-        self._zi = signal.sosfilt_zi(self._sos) * 0.0
-
-        # Block state (native fs)
-        self._block_n = int(round(self.fs * CFG.BATCH_SECONDS))
-        self._block_hist = deque(maxlen=self._block_n)
-        self._samples_in_block = 0
-
-        # Pending 5 Hz series to drip
-        self._band_ready = deque()
-        self._env_ready = deque()
-
-        # Keep previous completed block (native) for seam fix
-        self._last_block: Optional[np.ndarray] = None
-
-        # Seam params (native samples / 5 Hz points)
-        self._seam_tail_n = int(round(CFG.PATCH_TAIL_SECONDS * self.fs))
-        self._seam_tail_pts = int(round(CFG.PATCH_TAIL_SECONDS * CFG.TARGET_HZ))
-
-        # Status
-        self._ready = False
-        self._patch_epoch = 0
-        self._lock = Lock()
-        self.env_min: Optional[float] = None
-        self.env_max: Optional[float] = None
-        self.timestamp: Optional[str] = None
-
-    # ---- DSP helpers ----
-    def _bandpass(self, x: np.ndarray) -> np.ndarray:
-        y, self._zi = signal.sosfilt(self._sos, np.asarray(x, dtype=np.float64), zi=self._zi)
-        return y
-
-    def _decimate_to_5hz(self, x: np.ndarray) -> np.ndarray:
+    # ---------- Data Extraction for JSON Structure ----------
+    def extract_station_json(tr: Trace, env_fs: float = 1.0) -> dict:
         """
-        Zero-phase anti-aliased decimation from native fs to TARGET_HZ.
-        Uses integer decimation when possible, otherwise rational resample.
+        Extracts the required JSON structure for a single trace (station/channel).
+        Downsamples envelope and band arrays to env_fs (default 1Hz) for storage efficiency.
         """
-        if x.size == 0:
-            return np.empty(0, dtype=float)
+        # Envelope: absolute value of the analytic signal (Hilbert transform)
+        from scipy.signal import hilbert, decimate
+        data = np.asarray(tr.data, dtype=np.float64)
+        if data.size == 0:
+            return None
+        # Envelope calculation
+        analytic = hilbert(data)
+        envelope = np.abs(analytic)
+        # Downsample envelope and band to 1Hz (or as close as possible)
+        fs = float(getattr(tr.stats, "sampling_rate", 0.0) or 0.0)
+        if fs <= 0:
+            return None
+        decim = max(1, int(round(fs / env_fs)))
+        env_ds = envelope[::decim]
+        band_ds = data[::decim]
+        MAX = 3600
+        env_ds  = env_ds[:MAX]
+        band_ds = band_ds[:MAX]
+        env_min = float(np.min(env_ds)) if env_ds.size else 0.0
+        env_max = float(np.max(env_ds)) if env_ds.size else 0.0
+        t0 = tr.stats.starttime.datetime.replace(tzinfo=awst_tz)
+        return {
+            "timestamp": t0.isoformat(),
+            "band_len": int(len(band_ds)),
+            "env_len": int(len(env_ds)),
+            "env_min": env_min,
+            "env_max": env_max,
+            "band": band_ds.tolist(),
+            "env": env_ds.tolist()
+        }
 
-        fs = int(round(self.fs))
-        tgt = int(round(CFG.TARGET_HZ))
-        if fs % tgt == 0 and fs > tgt:
-            q = fs // tgt  # e.g., 250 -> 5 => q=50
-            return signal.decimate(x.astype(np.float64), q, ftype="iir", zero_phase=True).astype(float)
-
-        # fallback: rational resample with polyphase FIR
-        up, down = tgt, fs
-        g = gcd(up, down) if down != 0 else 1
-        up //= max(g, 1); down //= max(g, 1)
-        return signal.resample_poly(x.astype(np.float64), up, down).astype(float)
-
-    def _env_native(self, band_native: np.ndarray) -> np.ndarray:
+    @bp.route("/playback_json/<filenames>")
+    def playback_json(filenames: str):
         """
-        True analytic envelope (Hilbert magnitude) at native fs, gently smoothed
-        with a zero-phase lowpass to avoid ripple.
+        Returns a JSON object for each station in the uploaded files, with the required structure.
+        Only the first trace for each station is used for demonstration.
         """
-        if band_native.size == 0:
-            return np.empty(0, dtype=float)
+        file_list = [f for f in filenames.split(",") if f]
+        merged = _read_streams_for_files(file_list)
+        if len(merged) == 0:
+            return jsonify({"stations": []})
+        by_station = _group_traces_by_station(merged)
+        result = []
+        for sid, traces in by_station.items():
+            # Use the first trace for each station for this demo
+            js = extract_station_json(traces[0])
+            if js:
+                js["id"] = sid
+                result.append(js)
+        return jsonify({"stations": result})
 
-        env = np.abs(signal.hilbert(band_native.astype(np.float64)))
+    # ---------- Helpers (scoped to this blueprint) ----------
+    def clear_uploads_folder() -> None:
+        """Remove previous batch so each upload is a fresh set."""
+        for f in glob.glob(os.path.join(upload_dir, "*")):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
-        # gentle lowpass (~0.3 Hz cutoff) to stabilize the curve
-        nyq = max(1e-6, 0.5 * self.fs)
-        wc = min(0.3 / nyq, 0.99)  # normalized cutoff; clamp < 1
-        sos = signal.butter(2, wc, btype="low", output="sos")
-        env = signal.sosfiltfilt(sos, env)
-        return np.maximum(env, 0.0).astype(float)
+    # Read all uploaded files into one ObsPy Stream, stores in a object
+    def _read_streams_for_files(filenames: List[str]) -> Stream:
+        """Read all uploaded files into a single ObsPy Stream (concatenated)."""
+        merged = Stream()
+        for fname in filenames:
+            path = os.path.join(upload_dir, fname)
+            if not os.path.exists(path):
+                continue
+            try:
+                st = obspy_read(path)
+                merged += st
+            except Exception:
+                # Ignore unreadable files; keep others
+                continue
+        return merged
 
-    def _env_5hz_from_block(self, band_native_block: np.ndarray) -> np.ndarray:
-        """Envelope at native fs -> zero-phase decimate to TARGET_HZ."""
-        env_native = self._env_native(band_native_block)
-        return self._decimate_to_5hz(env_native)
-    # ---- one-time seam fix at block boundary ----
-    def _patch_seam_once(self, cur_block: np.ndarray, env5_cur: np.ndarray) -> np.ndarray:
+    def _station_id(tr: Trace) -> str:
+        """Stable station key: NET.STA.LOC.CHA"""
+        return f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}.{tr.stats.channel}"
+
+    def _group_traces_by_station(stream: Stream) -> Dict[str, List[Trace]]:
+        """Group traces by station id."""
+        grouped: Dict[str, List[Trace]] = {}
+        for tr in stream:
+            sid = _station_id(tr)
+            grouped.setdefault(sid, []).append(tr)
+        return grouped
+
+    def _slice_concat_values(
+        traces: List[Trace], t_start, t_end
+    ) -> Tuple[np.ndarray, Tuple[float, str, None]]:
         """
-        Recompute a seam-safe envelope across [prev_tail | cur_head] at native fs
-        with Hilbert, then zero-phase decimate to 5 Hz and patch:
-          • tail of already-published q.env
-          • head of env5_cur
+        Slice each trace in [t_start, t_end) and concatenate values.
+        Returns (values, (fs, t0_iso, None)).
+        - Concatenation means overlaps are combined back-to-back (for 1s windows this is fine).
+        - The slice with the MOST samples defines fs and t0.
         """
-        if self._last_block is None or self._seam_tail_n <= 0 or self._seam_tail_pts <= 0:
-            return env5_cur
+        slices: List[np.ndarray] = []
+        best = None  # (num_samples, fs, t0_iso, values)
+        for tr in traces:
+            try:
+                sl = tr.slice(starttime=t_start, endtime=t_end)
+            except Exception:
+                continue
+            vals = np.asarray(sl.data, dtype=np.float64)
+            if vals.size:
+                slices.append(vals)
+                fs = float(getattr(tr.stats, "sampling_rate", 0.0))
+                t0_iso = t_start.datetime.isoformat()
+                cand = (vals.size, fs, t0_iso, vals)
+                if best is None or cand[0] > best[0]:
+                    best = cand
 
-        tail_n = min(self._seam_tail_n, self._last_block.size)
-        head_n = min(self._seam_tail_n, cur_block.size)
-        if tail_n == 0 or head_n == 0:
-            return env5_cur
+        if not slices:
+            return np.array([], dtype=np.float64), (0.0, None, None)
 
-        prev_tail = self._last_block[-tail_n:]
-        next_head = cur_block[:head_n]
-        combo = np.concatenate([prev_tail, next_head], axis=0)
+        all_vals = np.concatenate(slices, axis=0)
+        _, fs_best, t0_iso_best, _ = best
+        return all_vals, (fs_best, t0_iso_best, None)
 
-        # native envelope then anti-aliased decimation
-        env_combo_5 = self._decimate_to_5hz(self._env_native(combo))
-        if env_combo_5.size == 0:
-            return env5_cur
-
-        # split the decimated combo tail/head in 5 Hz domain
-        tail_pts = min(self._seam_tail_pts, env_combo_5.size)
-        head_pts = min(self._seam_tail_pts, max(0, env_combo_5.size - tail_pts))
-        prev_tail_5 = env_combo_5[:tail_pts]
-        next_head_5 = env_combo_5[tail_pts:tail_pts + head_pts]
-
-        with self._lock:
-            # patch the tail of the already-published env queue
-            if self.q.env and prev_tail_5.size:
-                qe = list(self.q.env)
-                k = min(len(qe), prev_tail_5.size)
-                qe[-k:] = prev_tail_5[-k:].tolist()
-                self.q.env.clear()
-                self.q.env.extend(qe)
-
-            # patch head of the new block envelope before queuing
-            if next_head_5.size and env5_cur.size:
-                k2 = min(env5_cur.size, next_head_5.size)
-                env5_cur[:k2] = next_head_5[:k2]
-
-            # refresh stats/epoch
-            if self.q.env:
-                arr = np.fromiter(self.q.env, dtype=np.float64)
-                self.env_min = float(arr.min())
-                self.env_max = float(arr.max())
-            self._patch_epoch += 1
-
-        return env5_cur
-
-    # ---- main streaming method ----
-    def _maybe_refresh_location(self) -> None:
+    def _hardcoded_latlon_for_trace(tr: Trace) -> Tuple[float, float]:
         """
-        If we don’t yet have coordinates, try to fetch them at most once every 20s.
-        This keeps the UI responsive and eventually fills lat/lon when the API is ready.
+        Try to get coordinates from trace.stats, otherwise fall back to a sensible default
+        so Leaflet never breaks.
         """
-        if self.lat is not None and self.lon is not None:
-            return
-
-        now = time.time()
-        if now - self._last_loc_attempt < 5.0:
-            return
-        self._last_loc_attempt = now
-
         try:
-            loc = get_location_or_fallback(self.host, timeout=(3.0, 10.0), fallback=None)
-            if loc:
-                self.lat, self.lon = loc
+            coords = getattr(tr.stats, "coordinates", {}) or {}
+            lat = coords.get("latitude")
+            lon = coords.get("longitude")
         except Exception:
-            pass
+            lat = lon = None
 
-    def process_chunk(self, trace: Trace) -> None:
-        self._maybe_refresh_location()
-        x = np.asarray(trace.data, dtype=np.float64)
-        if x.size == 0:
-            return
+        if lat is None or lon is None:
+            lat = getattr(tr.stats, "lat", None)
+            lon = getattr(tr.stats, "lon", None)
 
-        # keep raw
-        self._raw.extend(map(float, x))
+        if lat is None or lon is None:
+            # Final fallback near Gingin
+            lat, lon = (-31.35, 115.92)
+        return (lat, lon)
 
-        # native band-pass
-        bp = self._bandpass(x)
+    def _coord_for_station(traces: List[Trace]) -> Tuple[float, float]:
+        """Pick coordinates from any trace (with fallback)."""
+        for tr in traces:
+            lat, lon = _hardcoded_latlon_for_trace(tr)
+            if lat is not None and lon is not None:
+                return (lat, lon)
+        return (-31.35, 115.92)
 
-        # accumulate into block
-        self._block_hist.extend(bp.tolist())
-        self._samples_in_block += bp.size
+    # ---------- Routes ----------
+    @bp.route("/playback", methods=["GET", "POST"])
+    def playback():
+        """GET: render UI. POST: accept exactly ONE MiniSEED file and return its filename."""
+        if request.method == "POST":
+            clear_uploads_folder()
 
-        # on full block: compute series, patch seam once, then queue
-        if self._samples_in_block >= self._block_n and len(self._block_hist) == self._block_n:
-            block = np.asarray(self._block_hist, dtype=np.float64)
+            files = [f for f in request.files.getlist("seedlink_file") if f and f.filename]
 
-            # anti-aliased decimation for both signals
-            band_5hz = self._decimate_to_5hz(block)
-            env_5hz  = self._env_5hz_from_block(block)
+            if len(files) == 0:
+                return jsonify({"status": "error", "message": "No file uploaded"}), 400
+            if len(files) > 1:
+                return jsonify({"status": "error", "message": "Only one file may be uploaded"}), 400
 
-            # align lengths (decimation can differ by 1 sample)
-            n = min(band_5hz.size, env_5hz.size)
-            if n > 0:
-                band_5hz = band_5hz[:n]
-                env_5hz  = env_5hz[:n]
+            file = files[0]
+            filename = secure_filename(file.filename)
+            dest = os.path.join(upload_dir, filename)
+            try:
+                file.save(dest)
+            except Exception as e:
+                return jsonify({"status": "error", "message": f"Failed to save file: {e}"}), 500
 
-            # one-time seam patch at the boundary (envelope only)
-            env_5hz = self._patch_seam_once(block, env_5hz)
+            return jsonify({"status": "uploaded", "filenames": [filename]})
 
-            # queue for dripping
-            self._band_ready.extend(map(float, band_5hz))
-            self._env_ready .extend(map(float, env_5hz))
+        return render_template("playback.html")
 
-            # ready after first block
-            self._ready = True
+    @bp.route("/playback_timeline/<filenames>")
+    def playback_timeline(filenames: str):
+        """
+        Return the global start/end and slider steps (1-second step).
+        Timeline spans the union of all uploaded files.
+        """
+        file_list = [f for f in filenames.split(",") if f]
+        merged = _read_streams_for_files(file_list)
+        if len(merged) == 0:
+            return jsonify({"start_iso": None, "end_iso": None, "steps": 1})
 
-            # keep as "previous" for next seam
-            self._last_block = block
+        start = min(tr.stats.starttime for tr in merged)
+        end = max(tr.stats.endtime for tr in merged)
+        window_size = 1  # seconds per slider step
+        steps = int((end - start) // window_size) + 1
 
-            # start new non-overlapping block
-            self._samples_in_block = 0
-            self._block_hist.clear()
+        return jsonify({
+            "start_iso": start.datetime.replace(tzinfo=awst_tz).isoformat(),
+            "end_iso": end.datetime.replace(tzinfo=awst_tz).isoformat(),
+            "steps": steps
+        })
 
-        # drip if ready
-        if self._ready:
-            burst_seconds = x.size / self.fs
-            k = int(round(CFG.TARGET_HZ * burst_seconds))
+    @bp.route("/playback_data/<filenames>/<int:slider>")
+    def playback_data(filenames: str, slider: int):
+        """
+        Return per-station RMS for the current 1-second window.
+        Multiple files for the same station are treated as one logical signal.
+        """
+        file_list = [f for f in filenames.split(",") if f]
+        merged = _read_streams_for_files(file_list)
+        if len(merged) == 0:
+            return jsonify({"slider": slider, "stations": []})
 
-            band_out, env_out = [], []
-            for _ in range(k):
-                if not self._band_ready or not self._env_ready:
-                    break
-                band_out.append(self._band_ready.popleft())
-                env_out.append(self._env_ready.popleft())
+        window_size = 1
+        t0 = min(tr.stats.starttime for tr in merged)
+        t_start = t0 + slider * window_size
+        t_end = t_start + window_size
 
-            if band_out or env_out:
-                with self._lock:
-                    if band_out: self.q.band.extend(band_out)
-                    if env_out:  self.q.env.extend(env_out)
-                    if self.q.env:
-                        arr = np.fromiter(self.q.env, dtype=np.float64)
-                        self.env_min = float(arr.min())
-                        self.env_max = float(arr.max())
+        # Only Z-channel traces for map badges
+        z_traces = [tr for tr in merged if str(tr.stats.channel).endswith("Z")]
+        by_station = _group_traces_by_station(z_traces)
 
-        # timestamp for UI
-        self.timestamp = trace.stats.endtime.isoformat()
+        stations = []
+        for sid, traces in by_station.items():
+            # Merge all segments intersecting this second
+            vals, _meta = _slice_concat_values(traces, t_start, t_end)
+            rms = float(np.sqrt(np.mean(vals ** 2))) if vals.size else 0.0
+            lat, lon = _coord_for_station(traces)
+            stations.append({"id": sid, "lat": lat, "lon": lon, "rms": rms})
 
-    # ---- JSON for the UI sender ----
-    def to_json(self) -> dict:
-        with self._lock:
-            return {
-                "ready": self._ready,
-                "timestamp": self.timestamp,
-                "band_len": len(self.q.band),
-                "env_len": len(self.q.env),
-                "env_min": self.env_min,
-                "env_max": self.env_max,
-                "lat": self.lat,           
-                "lon": self.lon, 
-                "band": [round(v, 3) for v in self.q.band],
-                "env":  [round(v, 3) for v in self.q.env],
-                "patch_epoch": self._patch_epoch,
-            }
+        return jsonify({"slider": slider, "stations": stations})
 
-    def latest_raw(self) -> Optional[dict]:
-        with self._lock:
-            vals = list(self._raw)
-            if not vals:
+    @bp.route("/playback_wave/<filenames>/<int:slider>/<path:station_id>")
+    def playback_wave(filenames: str, slider: int, station_id: str):
+        """
+        Return the 1-second waveform slice for one station.
+        If multiple files contain that station, we combine their samples within the window.
+        """
+        file_list = [f for f in filenames.split(",") if f]
+        merged = _read_streams_for_files(file_list)
+        if len(merged) == 0:
+            return jsonify({"fs": 0, "values": [], "t0_iso": None})
+
+        window_size = 1
+        t0 = min(tr.stats.starttime for tr in merged)
+        t_start = t0 + slider * window_size
+        t_end = t_start + window_size
+
+        # All traces belonging to exactly this station id (NET.STA.LOC.CHA)
+        traces = [tr for tr in merged if _station_id(tr) == station_id]
+        if not traces:
+            return jsonify({"fs": 0, "values": [], "t0_iso": None})
+
+        vals, (fs, t0_iso, _) = _slice_concat_values(traces, t_start, t_end)
+        return jsonify({"fs": float(fs or 0.0), "values": vals.astype(np.float64).tolist(), "t0_iso": t0_iso})
+
+    @bp.route("/playback_stats/<filenames>")
+    def playback_stats(filenames: str):
+        """
+        Compute per-second RMS across the entire uploaded hour in one pass (server-side).
+        Returns the global min/max RMS (value + station id + timestamp ISO).
+        Efficient: vectorized binning by second using np.bincount; no N requests from client.
+        """
+        file_list = [f for f in filenames.split(",") if f]
+        merged = _read_streams_for_files(file_list)
+        if len(merged) == 0:
+            return jsonify({"min": None, "max": None})
+
+        # Work on Z only (matches your playback policy)
+        z_traces = [tr for tr in merged if str(tr.stats.channel).endswith("Z")]
+        if not z_traces:
+            return jsonify({"min": None, "max": None})
+
+        # Reference second grid for the hour
+        t_start = min(tr.stats.starttime for tr in z_traces)
+        t_end   = max(tr.stats.endtime   for tr in z_traces)
+        base_sec = int(floor(t_start.timestamp))                      # anchor
+        n_secs   = max(1, int(ceil(t_end.timestamp) - base_sec))      # ~3600
+
+        # Per-station accumulators: second -> sum(x^2) and count
+        sumsqs = defaultdict(lambda: np.zeros(n_secs, dtype=np.float64))
+        counts = defaultdict(lambda: np.zeros(n_secs, dtype=np.int64))
+
+        # Vectorized binning per trace
+        for tr in z_traces:
+            sid = _station_id(tr)
+            fs = float(getattr(tr.stats, "sampling_rate", 0.0) or 0.0)
+            if fs <= 0:
+                continue
+            data = np.asarray(tr.data, dtype=np.float64)
+            if data.size == 0:
+                continue
+
+            # Offset seconds from base
+            start_ts = tr.stats.starttime.timestamp
+            # For each sample, compute which integer-second bucket it belongs to
+            idx = np.floor((start_ts - base_sec) + np.arange(data.size) / fs).astype(np.int64)
+
+            # Keep only indices within [0, n_secs)
+            m = (idx >= 0) & (idx < n_secs)
+            if not np.any(m):
+                continue
+            idx = idx[m]
+            seg = data[m]
+            seg2 = seg * seg
+
+            # Accumulate sum of squares and counts into per-second bins
+            sumsqs[sid] += np.bincount(idx, weights=seg2, minlength=n_secs)
+            counts[sid] += np.bincount(idx, minlength=n_secs)
+
+        # Compute RMS per second for each station, then global min/max
+        best_min = None  # (rms, sid, sec_idx)
+        best_max = None
+        for sid in sumsqs.keys():
+            c = counts[sid]
+            s2 = sumsqs[sid]
+            valid = c > 0
+            if not np.any(valid):
+                continue
+            rms = np.zeros_like(s2, dtype=np.float64)
+            rms[valid] = np.sqrt(s2[valid] / c[valid])
+
+            # min (exclude zeros where no data)
+            mi_idx = np.argmin(np.where(valid, rms, np.inf))
+            ma_idx = np.argmax(np.where(valid, rms, -np.inf))
+            mi_val = rms[mi_idx] if valid[mi_idx] else np.inf
+            ma_val = rms[ma_idx] if valid[ma_idx] else -np.inf
+
+            if best_min is None or mi_val < best_min[0]:
+                best_min = (float(mi_val), sid, int(mi_idx))
+            if best_max is None or ma_val > best_max[0]:
+                best_max = (float(ma_val), sid, int(ma_idx))
+
+        def pack(item):
+            if not item:
                 return None
-            return {"t0_iso": self.timestamp, "fs": float(self.fs), "values": vals}
+            val, sid, sec_idx = item
+            iso = datetime.fromtimestamp(base_sec + sec_idx, tz=awst_tz).isoformat()
+            return {"value": val, "id": sid, "iso": iso}
 
+        return jsonify({"min": pack(best_min), "max": pack(best_max)})
 
-# ----------------------------- Client glue ------------------------------
-def station_code_from_ip(host: str) -> str:
-    tail = "".join([c for c in host.split(".")[-1] if c.isdigit()])[-2:]
-    return f"WAR{tail.zfill(2)}"
-
-
-def _run_client(proc: StationProcessor) -> None:
-    def on_data(trace: Trace) -> None:
-        proc.process_chunk(trace)
-
-    c = EasySeedLinkClient(proc.host, 18000)
-    c.on_data = on_data
-    c.select_stream(proc.net, proc.sta, CFG.CHAN)
-    c.run()  # blocking; run in a daemon thread
-
-
-def make_processors(hosts: Optional[List[str]] = None) -> List[StationProcessor]:
-    hs = hosts or CFG.HOSTS
-    return [StationProcessor(h, CFG.NET, station_code_from_ip(h), CFG.CHAN) for h in hs]
-
-
-def start_processor_thread(proc: StationProcessor) -> Thread:
-    t = Thread(target=_run_client, args=(proc,), daemon=True)
-    t.start()
-    return t
-# --- END OF python/receiver.py ---
+    return bp
