@@ -42,12 +42,7 @@ from python.playback_routes import create_playback_blueprint
 app.register_blueprint(create_playback_blueprint(UPLOAD_DIR, AWST))
 
 # Demo coords for stations (override with real values if available)
-COORDS: Dict[str, Tuple[float, float]] = {
-    "WAR27": (-31.35, 115.92),
-    "WAR32": (-31.40, 115.96),
-    "WAR33": (-31.45, 115.98),
-}
-
+COORDS = CFG.COORDS
 
 # ---------------------------- Live processors ---------------------------
 
