@@ -47,7 +47,7 @@ COORDS = CFG.COORDS
 # ---------------------------- Live processors ---------------------------
 
 _processors = make_processors()
-_threads    = [start_processor_thread(p) for p in _processors]
+_threads = [start_processor_thread(p) for p in _processors]
 
 def _sid(p) -> str:
     return f"{getattr(p, 'net', 'GG')}.{p.sta}..{getattr(p, 'chan', 'HNZ')}"
