@@ -109,7 +109,9 @@ def background_sender():
 def home():
     # Provide a default for the initial overlay (used only until first socket payload arrives)
     return render_template("home.html", title="Live Seismic Map",
-                           active_page="home", startup_seconds=int(CFG.STARTUP_SECONDS))
+                           active_page="home", startup_seconds=int(CFG.STARTUP_SECONDS), 
+                           radius=int(CFG.STATION_RADIUS), 
+                           redraw=int(CFG.FRONTEND_FORCE_REDRAW_SECONDS))
 
 @app.route("/raw")
 def raw_dump_all():
@@ -132,3 +134,4 @@ def raw_dump_all():
 if __name__ == "__main__":
     socketio.start_background_task(background_sender)
     socketio.run(app, debug=False, host="0.0.0.0", port=5000)
+    
