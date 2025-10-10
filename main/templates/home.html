@@ -61,7 +61,8 @@
     const UI_FS = 5;                         // 5 Hz series from backend
     const TAIL_WINDOW_S = 40;               // redraw tail length
     const FORCED_RECONCILE_EVERY_S = 2;     // how often to re-smooth the tail
-    const FORCED_FULL_REDRAW_EVERY_S = 40;  // belt & suspenders
+    const FORCED_FULL_REDRAW_EVERY_S = {{ redraw | tojson }};  // belt & suspenders
+    const DEFAULT_RADIUS = {{ radius | tojson }};                  // station circle radius in metres
 
     /* ==================== helpers ==================== */
     const colorForNorm = v =>
@@ -85,7 +86,7 @@
       if (markers[s.id]) return markers[s.id];
 
       const circle = L.circle([s.lat,s.lon], {
-        radius:10, color:'#222', weight:2, fillColor:colorForNorm(s.norm), fillOpacity:0.75
+        radius:DEFAULT_RADIUS, color:'#222', weight:2, fillColor:colorForNorm(s.norm), fillOpacity:0.75
       });
 
       const dot = L.circleMarker([s.lat,s.lon], { radius:6, color:'#000', fillColor:'#000', fillOpacity:1, weight:1 });
