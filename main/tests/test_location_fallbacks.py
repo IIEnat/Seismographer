@@ -9,19 +9,13 @@ import importlib
 import pytest
 
 def test_unknown_station_has_safe_behavior():
-    # Prefer config.COORDS; fall back to app.COORDS if needed
+    # Coords should be in config.py so check there only
     COORDS = None
     try:
         cfg = importlib.import_module("config")
         COORDS = getattr(cfg, "COORDS", None)
     except Exception:
         pass
-    if COORDS is None:
-        try:
-            app = importlib.import_module("app")
-            COORDS = getattr(app, "COORDS", None)
-        except Exception:
-            pass
 
     if COORDS is None:
         pytest.skip("No COORDS mapping found in config or app")
