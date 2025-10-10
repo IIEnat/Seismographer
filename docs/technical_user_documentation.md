@@ -1,5 +1,6 @@
+# Seismographer - Technical User Documentation
 
-## Data Specifications (Technical Users)
+[TO BE EDITED STILL]
 
 ### Data Sources
 

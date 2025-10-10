@@ -1,23 +1,12 @@
+# Seismographer - Developer Documentation
 
-## Features & Technical Implementation
+## Project Structure
+See [../README.md](../README.md)
 
-### Key Features
-
-- **Real-Time Visualization:**
-  - Flask + Socket.IO backend streams live updates to the frontend.
-  - Interactive Leaflet map displays station bubbles with color-coded intensity.
-
-- **Customizable Views:**
-  - Filter stations by name or time window.
-  - Playback UI for uploading and analyzing MiniSEED files.
-
-- **Diagnostics:**
-  - `/raw` endpoint provides latest raw seismic samples for debugging and monitoring.
-
-### Technical Stack
+## Technical Stack
 
 - **Backend:**
-  - Python (Flask, ObsPy, numpy)
+  - Python (Flask, ObsPy, NumPy)
   - Modular design:
     - `receiver.py`: Connects to SeedLink or synthetic generators, processes signals.
     - `ingest.py`: Handles band/envelope streams and signal processing.
@@ -25,19 +14,17 @@
     - `playback_routes.py`: Implements playback features and endpoints.
 
 - **Frontend:**
-  - HTML, CSS, JavaScript
-  - Leaflet for interactive mapping
-  - Custom CSS for UI styling
+  - HTML, CSS, JavaScript.
+  - Leaflet for interactive mapping.
+  - Custom CSS for UI styling.
 
 - **Templates:**
-  - `home.html`: Main map and live view
-  - `navbar.html`: Navigation bar
-  - `playback.html`: Playback UI for historical data
+  - `home.html`: Main map and live view.
+  - `navbar.html`: Navigation bar.
+  - `playback.html`: Playback UI for historical data.
 
 - **Uploads:**
   - MiniSEED files are uploaded to the `uploads/` directory for playback analysis.
-
----
 
 ## Module Breakdown
 
@@ -50,11 +37,11 @@
 
 ### `config.py`
 - Centralizes all tunable parameters:
-  - Station connectivity (`HOSTS`, `NET`, `CHAN`)
-  - Signal processing (`FS`, `BAND`, `TARGET_HZ`)
-  - Buffering (`BATCH_SECONDS`, `RAW_SECONDS`)
-  - Smoothing (`PATCH_TAIL_SECONDS`, `PATCH_INTERVAL_SECONDS`)
-  - Startup and simulation (`STARTUP_SECONDS`, `SPEED_FACTOR`)
+  - Station connectivity (`HOSTS`, `NET`, `CHAN`).
+  - Signal processing (`FS`, `BAND`, `TARGET_HZ`).
+  - Buffering (`BATCH_SECONDS`, `RAW_SECONDS`).
+  - Smoothing (`PATCH_TAIL_SECONDS`, `PATCH_INTERVAL_SECONDS`).
+  - Startup and simulation (`STARTUP_SECONDS`, `SPEED_FACTOR`).
 
 ### `python/receiver.py`
 - Handles connection to SeedLink servers or synthetic data generators.
@@ -85,13 +72,13 @@
 - Renders the main map UI with live station data.
 
 ### `templates/navbar.html`
-- Provides navigation links for the app.
+- Provides navigational linking for the app.
 
 ### `templates/playback.html`
 - Renders the playback UI for historical data analysis.
 
-
 ## API Endpoints
+
 | Endpoint                                           | Method   | Description                                   |
 |----------------------------------------------------|----------|-----------------------------------------------|
 | `/`                                                | GET      | Live seismic map UI                           |
@@ -102,14 +89,6 @@
 | `/playback_data/<filenames>/<slider>`              | GET      | Per-station RMS for current second            |
 | `/playback_wave/<filenames>/<slider>/<station_id>` | GET      | 1-second waveform slice                       |
 | `/playback_stats/<filenames>`                      | GET      | Global min/max RMS across dataset             |
-
-## System Overview
-- **Ingest (receiver.py, ingest.py):** Connects to SeedLink or synthetic generators, processes signals into band/envelope streams.
-- **Processing:** Each station is handled by a StationProcessor that applies band-pass filtering, envelope detection, seam smoothing, and downsampling.
-- **Backend (app.py):** Flask + Socket.IO app that streams live updates, serves HTML templates, and provides a `/raw` diagnostics endpoint.
-- **Playback (playback_routes.py):** Blueprint for uploading MiniSEED files, generating timelines, per-station waveforms, and RMS stats.
-- **Frontend (templates + static):** Interactive Leaflet map with color-coded station bubbles and a playback UI.
-
 
 ## Configuration Reference
 
@@ -137,45 +116,13 @@ All tunable parameters are set in `config.py`:
   - `STARTUP_SECONDS`: Countdown shown to frontend on startup
   - `SPEED_FACTOR`: Simulation speed control
 
----
-
-
 ## Suggestions for Future Development
 
-1. **User Documentation and Help**
-   - Add tooltips, help popups, and a dedicated help page in the UI.
-   - Provide onboarding guides for new users.
+- **User Experience**
+  - Add tooltips, help popups, and a dedicated manual page within the application.
+  - Create a single executable file that can run the server and open it in a browser.
 
-2. **Data Export and Sharing**
-   - Enable exporting visualizations and raw data (CSV, PNG, JSON).
-   - Allow sharing of playback sessions or map views.
-
-3. **Advanced Filtering and Search**
-   - Filter stations by geographic region, seismic intensity, or custom queries.
-   - Implement search functionality for station names and locations.
-
-4. **Mobile and Accessibility Support**
-   - Optimize frontend for mobile devices and tablets.
-   - Improve accessibility (ARIA labels, keyboard navigation).
-
-5. **Performance and Scalability**
-   - Implement caching for frequently accessed data.
-   - Use asynchronous processing for large MiniSEED files and real-time streams.
-   - Consider containerization (Docker) for deployment.
-
-6. **Security Enhancements**
-   - Add authentication and authorization for sensitive endpoints.
-   - Validate and sanitize uploaded files to prevent malicious input.
-
-7. **Integration and Extensibility**
-   - Support additional seismic data sources and formats.
-   - Provide API documentation for third-party integration.
-   - Modularize frontend components for easier extension.
-
-8. **Visualization Improvements**
-   - Add heatmaps, historical trend graphs, and real-time alerting for significant seismic events.
-   - Enable annotation and bookmarking of events on the map.
-
-9. **Testing and Quality Assurance**
-   - Expand unit and integration tests for backend modules.
-   - Add frontend tests for UI components.
+- **Functionality**
+  - Implement a database to save the live seismic streams.
+  - Use a gradient colour overlay on the map instead of individually coloured stations.
+  - Implement a conversion from the meaningless voltage measures given by seismometers (and currently displayed) to displacement in micrometers.

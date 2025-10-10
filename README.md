@@ -14,7 +14,7 @@ Seismographer was developed as a group project assigned as part of the unit [CIT
 | Aaron        | 23815248       | Attempt27       |
 
 ## Summary
-Seismographer is a Flask web application developed for a Linux system that visualises real-time and historical seismic activity from seismometers.  The main page provides a live, top-down view of ground motion as it happens by displaying a map of seismic activity using a colour scale for each seismometer's readings.  This live page allows individual seismometers to be selected to simultaneously view a graph of the selected seismometer's readings.  A playback page also allows `.miniseed` and `.seed` files that store data from seismometers to be uploaded and played, displaying the same graphs as in the main page.
+Seismographer is a Flask web application developed for a Linux system that visualises real-time and historical seismic activity from seismometers.  The main page provides a live, top-down view of ground motion as it happens by displaying a map of seismic activity using a colour scale for each seismometer's readings.  This live page allows individual seismometers to be selected to simultaneously view a graph of the selected seismometer's readings.  A playback page also allows `.miniseed` and `.mseed` files that store data from seismometers to be uploaded and played, displaying the same graphs as in the main page.
 
 ## Project Setup
 To **install dependancies** from ```main/``` run:
@@ -56,7 +56,7 @@ Seismographer/
     │   ├── home.html                       # Main map and live view
     │   ├── navbar.html                     # Navigation bar
     │   └── playback.html                   # Playback page
-    └── uploads/                            # Directory for uploaded .miniseed and .seed files
+    └── uploads/                            # Directory for uploaded .miniseed and .mseed files
 ```
 
 ## Further Documentation
