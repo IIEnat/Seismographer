@@ -42,17 +42,12 @@ from python.playback_routes import create_playback_blueprint
 app.register_blueprint(create_playback_blueprint(UPLOAD_DIR, AWST))
 
 # Demo coords for stations (override with real values if available)
-COORDS: Dict[str, Tuple[float, float]] = {
-    "WAR27": (-31.35, 115.92),
-    "WAR32": (-31.40, 115.96),
-    "WAR33": (-31.45, 115.98),
-}
-
+COORDS = CFG.COORDS
 
 # ---------------------------- Live processors ---------------------------
 
 _processors = make_processors()
-_threads    = [start_processor_thread(p) for p in _processors]
+_threads = [start_processor_thread(p) for p in _processors]
 
 def _sid(p) -> str:
     return f"{getattr(p, 'net', 'GG')}.{p.sta}..{getattr(p, 'chan', 'HNZ')}"
@@ -114,7 +109,9 @@ def background_sender():
 def home():
     # Provide a default for the initial overlay (used only until first socket payload arrives)
     return render_template("home.html", title="Live Seismic Map",
-                           active_page="home", startup_seconds=int(CFG.STARTUP_SECONDS))
+                           active_page="home", startup_seconds=int(CFG.STARTUP_SECONDS), 
+                           radius=int(CFG.STATION_RADIUS), 
+                           redraw=int(CFG.FRONTEND_FORCE_REDRAW_SECONDS))
 
 @app.route("/raw")
 def raw_dump_all():
@@ -137,3 +134,4 @@ def raw_dump_all():
 if __name__ == "__main__":
     socketio.start_background_task(background_sender)
     socketio.run(app, debug=False, host="0.0.0.0", port=5000)
+    

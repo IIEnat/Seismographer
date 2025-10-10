@@ -23,9 +23,14 @@ import config as CFG
 
 from python.location_retrieval import get_location_or_fallback
 import time
+import socket
 
 ## Changed this so that it imports real-time data instead of dummy data from ingest.py
 from obspy.clients.seedlink.easyseedlink import EasySeedLinkClient
+# fallback simulator (keeps Trace→process_chunk shape)
+from python.ingest import SimEasySeedLinkClient  
+
+MODE = "real"
 
 # ---------------------------- Data classes ------------------------------
 @dataclass
@@ -207,6 +212,8 @@ class StationProcessor:
         If we don’t yet have coordinates, try to fetch them at most once every 20s.
         This keeps the UI responsive and eventually fills lat/lon when the API is ready.
         """
+        if getattr(self, "_simulated", False):
+            return
         if self.lat is not None and self.lon is not None:
             return
 
@@ -320,7 +327,7 @@ class StationProcessor:
 
 # ----------------------------- Client glue ------------------------------
 def station_code_from_ip(host: str) -> str:
-    tail = "".join([c for c in host.split(".")[-1] if c.isdigit()])[-2:]
+    tail = "".join([c for c in host.split(".")[-1] if c.isdigit()])
     return f"WAR{tail.zfill(2)}"
 
 
@@ -328,10 +335,36 @@ def _run_client(proc: StationProcessor) -> None:
     def on_data(trace: Trace) -> None:
         proc.process_chunk(trace)
 
-    c = EasySeedLinkClient(proc.host, 18000)
-    c.on_data = on_data
-    c.select_stream(proc.net, proc.sta, CFG.CHAN)
-    c.run()  # blocking; run in a daemon thread
+    # Decide mode:
+
+    #   SIMULATE == "auto" -> try TCP connect to host:18000; if fails (or EasySeedLinkClient missing) use simulated
+    if CFG.SIMULATE is True:
+        MODE = "sim"
+    elif CFG.SIMULATE is False:
+        MODE = "real"
+    else:
+        # "auto": quick TCP probe to decide
+        try:
+            with socket.create_connection((proc.host, 18000), timeout=2.0):
+                MODE = "real"
+        except Exception:
+            MODE = "sim"
+        # If EasySeedLinkClient is unavailable in this environment, force sim
+        if MODE == "real" and EasySeedLinkClient is None:
+            MODE = "sim"
+
+    if MODE == "real":
+        proc._simulated = False  # mark for location lookups
+        c = EasySeedLinkClient(proc.host, 18000)
+        c.on_data = on_data
+        c.select_stream(proc.net, proc.sta, CFG.CHAN)
+        c.run()  # blocking; run in a daemon thread
+    else:
+        proc._simulated = True
+        c = SimEasySeedLinkClient(proc.host, 18000, fs=CFG.FS)
+        c.on_data = on_data
+        c.select_stream(proc.net, proc.sta, CFG.CHAN)
+        c.run()  # blocking; run in a daemon thread
 
 
 def make_processors(hosts: Optional[List[str]] = None) -> List[StationProcessor]:
