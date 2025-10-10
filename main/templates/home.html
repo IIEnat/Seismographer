@@ -74,12 +74,12 @@
 
     /* ==================== map ==================== */
     const map = L.map('map', { preferCanvas:true });
-    L.tileLayer("{{ url_for('static', filename='tiles') }}/{z}/{x}/{y}.png", {
-  minZoom: 10,
-  maxZoom: 14,
+L.tileLayer("/static/tiles/{z}/{x}/{y}.png", {
+  minZoom: 11,
+  maxZoom: 16,
   attribution: '© OpenStreetMap contributors'
 }).addTo(map);
-    map.setView([-31.35,115.92], 12);
+    map.setView([-31.35,115.92], 14);
     requestAnimationFrame(()=>map.invalidateSize());
     window.addEventListener('resize', ()=>map.invalidateSize());
 
