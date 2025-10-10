@@ -1,3 +1,7 @@
+<!--
+HTML & JS for /playback page
+-->
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -17,7 +21,7 @@
         <span class="chip chip--muted">Upload .mseed / .miniseed to view content</span>
     </header>
 
-    <!-- Upload Form -->
+    <!-- Upload form -->
     <div class="container">
         <form id="uploadForm" enctype="multipart/form-data" method="POST" style="margin: .75rem 0 1rem;">
             <input type="file" name="seedlink_file" id="seedlink_files" accept=".mseed,.seed,.dat,.miniseed" multiple required>
@@ -26,7 +30,7 @@
     </div>
 
     <div id="wrap" class="with-panel">
-        <!-- MAP -->
+        <!-- Map -->
         <div id="mapWrap" class="container-main">
             <div id="seismicMap"></div>
             
@@ -34,7 +38,7 @@
             <div id="queryResult" class="overlay dark" style="right: 10px; top: 10px; left: auto; display: none;"></div>
         </div>
 
-        <!-- SIDE PANEL -->
+        <!-- Side panel -->
         <aside id="sidePanel">
             <section class="panel-section">
                 <h3 class="panel-title">Station</h3>
@@ -57,7 +61,7 @@
         </aside>
     </div>
 
-    <!-- CONTROLS -->
+    <!-- Controls -->
     <div class="container">
         <div id="controls">
             <div class="controls-row">
@@ -74,7 +78,7 @@
         </div>
     </div>
 
-    <!-- WAVEFORM -->
+    <!-- Waveform -->
     <div id="waveWrap" class="container-section">
         <div id="wave"></div>
     </div>
@@ -197,7 +201,7 @@
             // Prepare timeline
             await initTimeline();
 
-            // ---- Verify the new station JSON shape (timestamp, band/env lengths & values) ----
+            // Verify the new station JSON shape (timestamp, band/env lengths & values)
             try {
                 const json = await fetchJSON(`/playback_json/${uploadedFilenames.join(',')}`);
                 const q = document.getElementById('queryResult');
@@ -210,7 +214,7 @@
                 'playback_json fetch failed';
             }
 
-            // ---- Detect hour min/max RMS to seed the color scale (optional) ----
+            // Detect hour min/max RMS to seed the color scale (optional) 
             try {
                 const stats = await fetchJSON(`/playback_stats/${uploadedFilenames.join(',')}`);
                 const vmin = stats?.min?.value, vmax = stats?.max?.value;
