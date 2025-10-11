@@ -13,11 +13,11 @@ $ pip install -r requirements.txt
 ## Configuration
 - For the application to connect to the seismometers, their static IP addresses must first be configured in [config.py](../main/config.py).
 - The variable `HOSTS` within the `# Stations / connectivity` section must be set to contain a list of seismometer IP addresses as strings.
-
+- This may require configuring a static IP address for the seismometers.
 
 ## Running
-- [Waiting on final details of map to discuss getting on network(s) before running]
-
+- Connect to the network that the seismometers are connected on.
+  - Note that if a problem arises here the app may default to fake simulated data.
 - Similar to installation, open a command-line interface like terminal and navigate to the `main/` directory.
 - To start the server that runs the application run:
 ```
@@ -31,10 +31,14 @@ $ python3 app.py
 ### Homepage: Live Seismic Map
 - Standardly manipulatable map on the left shows the Perth (for testing) and Gingin area.
 - Map will show the activity of connected seismometers and will update as new data arrives.
-- The colour of each station indicates its relative z-axis seismic activity according to the scale on the right.
+- The colour of each station indicates its relative up-down seismic activity according to the scale on the right.
   - The purple end of the colour gradient indicates a lower z-axis position, with the opposite yellow end of the spectrum indicating higher position.
-  - A red coloured station indicates and error with the data that station is recieving ()
-- Also shown on the right is the network code for the seismometers, rate the data is being streamed to the web app, the rate of the calculated data for display, and the ID of the currently selected station.
+  - A red coloured station indicates and error with the data that station is recieving (out of range or missing).
+- Also shown on the right:
+  - The network code the seismometers are on.
+  - The rate the data is being streamed to the web app.
+  - The rate of the calculated data for display.
+  - The ID of the currently selected station.
 - Clicking on a station selects it.
   - Down the bottom of the page will be a graph of the selected station's up-down seismic movement.
 
@@ -45,10 +49,10 @@ $ python3 app.py
 ### Playback Page
 - Click on `Choose Files` in the top left and select `.mseed` or `.miniseed` files from the popup.
 - Next click `Upload & Play`.
-- On the right panel you'll see
+- On the right panel you'll see:
    - The number of files you've uploaded.
    - The temporal length of those files.
-   - The currently selected seismometer
+   - The currently selected seismometer.
    - Whether the selected files are currently being played.
 - Down the bottom of the page you'll see a graph showing the raw seismic reading from the selected seismometer.
    - At the top of this graph is functionality to play and pause the playback as well as a slider the control the timeline and information about the files timeline.
