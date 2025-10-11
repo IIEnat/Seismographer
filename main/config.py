@@ -14,9 +14,7 @@ HOSTS = ["192.168.0.33", "192.168.0.32", "192.168.0.27"] # IPs of connected inst
 NET = "GG"      # Default seismic network code
 CHAN = "HNZ"    # Default channel code (vertical component, high-gain)
 
-# Simulate flag
-SIMULATE = 'auto'
-
+SIMULATE = 'auto' # Simulate flag
 # Demo coordinates (used if station metadata doesn’t provide lat/lon).
 # Override with real values for production.
 COORDS = {
@@ -33,15 +31,13 @@ FS = 250.0                          # Native sampling rate (Hz) of instrument da
 BAND = (0.05, 0.10)                 # Band-pass filter (Hz), applied during processing
 TARGET_HZ = 5.0                     # Downsample rate for UI envelope streaming (Hz)
 QSIZE = 900                         # Size of circular queue for envelope (~3 min @ 5 Hz)
-RAW_SECONDS = 3                     # Length of raw waveform history kept for /raw endpoint
-FRONTEND_FORCE_REDRAW_SECONDS = 40  # UI redraw safety interval (s)
-STATION_RADIUS = 1000               # Station marker radius (m) for UI
-
+MIN_PEAK_DIST_SEC = max(3.0, 0.5 / max(BAND[1], 1e-6))
 
 # Strict buffering: accumulate one full batch before emitting first output
-BATCH_SECONDS = 20                  # Initial processing window size (s)
+BATCH_SECONDS = 20               # Initial processing window size (s)
+STARTUP_SECONDS = BATCH_SECONDS  # Countdown shown to users on startup
+
 # Minimum distance between peaks: >= 3 s or half of shortest wave period
-MIN_PEAK_DIST_SEC = max(3.0, 0.5 / max(BAND[1], 1e-6))
 
 # ------------------------------------------------------------------------
 # Seam smoothing (block reconciliation)
@@ -54,13 +50,15 @@ PATCH_TAIL_SECONDS = 20.0           # Duration of overlap region for smoothing (
 PATCH_INTERVAL_SECONDS = 2.0        # How often to apply patching (s)
 
 # ------------------------------------------------------------------------
-# UI hints
+# UI options
 # ------------------------------------------------------------------------
 
-STARTUP_SECONDS = BATCH_SECONDS  # Countdown shown to users on startup
+FRONTEND_FORCE_REDRAW_SECONDS = 40  # UI redraw safety interval (s)
+STATION_RADIUS = 1000               # Station marker radius (m) for UI
 
 # ------------------------------------------------------------------------
 # Development / testing speed controls (simulator only)
 # ------------------------------------------------------------------------
 
+RAW_SECONDS = 3      # Length of raw waveform history kept for /raw endpoint
 SPEED_FACTOR = 1.0   # Playback speed multiplier (1.0 = real-time, 2.0 = 2× faster, etc.)

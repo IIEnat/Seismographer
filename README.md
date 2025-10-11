@@ -14,7 +14,7 @@ Seismographer was developed as a group project assigned as part of the unit [CIT
 | Aaron        | 23815248       | Attempt27       |
 
 ## Summary
-Seismographer is a Flask web application developed for a Linux system that visualises real-time and historical seismic activity from seismometers.  The main page provides a live, top-down view of ground motion as it happens by displaying a map of seismic activity using a colour scale for each seismometer's readings.  This live page allows individual seismometers to be selected to simultaneously view a graph of the selected seismometer's iltered readings.  A playback page also allows `.miniseed` and `.mseed` files that store data from seismometers to be uploaded and played, displaying the same graphs as in the main page but with raw data.
+Seismographer is a Flask web application developed for a Linux system that visualises real-time and historical seismic activity from seismometers.  The main page provides a live, top-down view of ground motion as it happens by displaying a map of seismic activity using a colour scale for each seismometer's readings.  This live page allows individual seismometers to be selected to simultaneously view a graph of the selected seismometer's filtered readings.  A playback page also allows `.miniseed` and `.mseed` files that store data from seismometers to be uploaded and played, displaying the same graphs as in the main page but with raw data.
 
 ## Project Setup
 To **install dependancies** from ```main/``` run:
@@ -29,7 +29,7 @@ $ python3 app.py
 
 The web app can then be accessed from `https://127.0.0.1:5000`.
 
-More detailed setup instructions can be found in [docs/user_manual.md](docs/user_manual.md).
+More detailed setup instructions can be found in [user_manual.md](docs/user_manual.md).
 
 ## Project Structure
 ```
@@ -60,11 +60,11 @@ Seismographer/
 ```
 
 ## Further Documentation
-For the basics on how to use the app see [docs/user_manual.md](docs/user_manual.md).
+For the basics on how to use the app see [user_manual.md](docs/user_manual.md).
 
-For details on the app's architecture, backend modules, data flow, and code structure see [docs/developer_documentation.md](developer_documentation.md).
+For details on the app's architecture, backend modules, data flow, and code structure see [developer_documentation.md](docs/developer_documentation.md).
 
-For technical specifications on the seismic data and its processing see [docs/technical_user_documentation.md](technical_user_documentation.md)
+For technical specifications on the seismic data and its processing see [technical_user_documentation.md](docs/technical_user_documentation.md)
 
 ## License
 This project is licensed under the terms of the GNU General Public License v3.0.  See [COPYING.txt](COPYING.txt) for more information.

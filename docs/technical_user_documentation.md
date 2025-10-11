@@ -1,4 +1,4 @@
-<!-- If you can read this you are viewing this document as unrendered markdown.  For readability we recommend viewing this document on Github or using one of the many widely available tools to render it as a PDF. -->
+<!-- If you can read this you are viewing this document as unrendered markdown.  For readability view this document on Github or use one of the many widely available tools to render it as a PDF. -->
 
 # Seismographer - Technical User Documentation
 
