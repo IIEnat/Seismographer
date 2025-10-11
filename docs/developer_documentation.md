@@ -1,3 +1,5 @@
+<!-- If you can read this you are viewing this document as unrendered markdown.  For readability we recommend viewing this document on Github or using one of the many widely available tools to render it as a PDF. -->
+
 # Seismographer - Developer Documentation
 
 ## Project Structure
@@ -114,7 +116,7 @@ All tunable parameters are set in `config.py`:
 
 - **Startup and Simulation:**
   - `STARTUP_SECONDS`: Countdown shown to frontend on startup
-  - `SPEED_FACTOR`: Simulation speed control
+  - `SPEED_FACTOR`: Simulation speed control for playback.
 
 ## Suggestions for Future Development
 
