@@ -14,12 +14,15 @@ HOSTS = ["192.168.0.33", "192.168.0.32", "192.168.0.27"] # IPs of connected inst
 NET = "GG"      # Default seismic network code
 CHAN = "HNZ"    # Default channel code (vertical component, high-gain)
 
+# Simulate flag
+SIMULATE = 'auto'
+
 # Demo coordinates (used if station metadata doesn’t provide lat/lon).
 # Override with real values for production.
 COORDS = {
-    "WAR27": (-31.35, 115.92),
+    "WAR33": (-31.35, 115.92),
     "WAR32": (-31.40, 115.96),
-    "WAR33": (-31.45, 115.98),
+    "WAR27": (-31.45, 115.98),
 }
 
 # ------------------------------------------------------------------------
@@ -32,6 +35,7 @@ TARGET_HZ = 5.0                     # Downsample rate for UI envelope streaming 
 QSIZE = 900                         # Size of circular queue for envelope (~3 min @ 5 Hz)
 RAW_SECONDS = 3                     # Length of raw waveform history kept for /raw endpoint
 FRONTEND_FORCE_REDRAW_SECONDS = 40  # UI redraw safety interval (s)
+STATION_RADIUS = 1000               # Station marker radius (m) for UI
 
 
 # Strict buffering: accumulate one full batch before emitting first output
