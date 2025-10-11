@@ -3,33 +3,37 @@
 # Seismographer - User Manual
 
 ## Installation
-- Get a local copy of the project onto your Linux device either by cloning the Github repository or simply downloading it as a `.zip` file and extracting it.
-- Open a command-line interface like terminal and navigate to the `main/` directory within the project.
-- To install the dependancies required by the project run the following command:
+1. Get a local copy of the project onto your Linux device either by cloning the Github repository or simply downloading it as a `.zip` file and extracting it.
+2. Open a command-line interface like terminal and navigate to the `main/` directory within the project.
+3. To install the dependancies required by the project run the following command:
 ```
 $ pip install -r requirements.txt
 ```
 
 ## Configuration
-- For the application to connect to the seismometers, their static IP addresses must first be configured in [config.py](../main/config.py).
-- The variable `HOSTS` within the `# Stations / connectivity` section must be set to contain a list of seismometer IP addresses as strings.
-- This may require configuring a static IP address for the seismometers.
+For the application to connect to the seismometers, their static IP addresses must first be configured in [config.py](../main/config.py).
+
+The variable `HOSTS` within the `# Stations / connectivity` section must be set to contain a list of seismometer IP addresses as strings.
+
+This may require configuring a static IP address for the seismometers by connecting to the network the seismometers are on and going to `169.254.33.33` (3 channel model) or `169.254.35.35` (6 channel model).  Log in and go to settings > network > static IP.  Then type `192.168.0.XX` (for WARXX), click on seedlink server, and add a seedlink server with default settings.
 
 ## Running
-- Connect to the network that the seismometers are connected on.
-  - Note that if a problem arises here the app may default to fake simulated data.
-- Similar to installation, open a command-line interface like terminal and navigate to the `main/` directory.
-- To start the server that runs the application run:
+1. Connect to the network that the seismometers are connected on.
+- Note that if a problem arises here the app will likely default to fake simulated data.
+2. Similar to installation, open a command-line interface like terminal and navigate to the `main/` directory.
+3. To start the server that runs the application run:
 ```
 $ python3 app.py
 ```
+- Allow a few seconds for the server to start up.
 - The web app can then be accessed by opening a web browser and going to `https://127.0.0.1:5000`.
   - Often this can be shortcut by holding `ctrl` and clicking on `https://127.0.0.1:5000` in the terminal.
+- The app will lauch displaying a popup 
 
 ## Usage
 
 ### Homepage: Live Seismic Map
-- Standardly manipulatable map on the left shows the Perth (for testing) and Gingin area.
+- After waiting for data to be prepared, a standardly manipulatable map on the left shows the Perth (for testing) and Gingin area.
 - Map will show the activity of connected seismometers and will update as new data arrives.
 - The colour of each station indicates its relative up-down seismic activity according to the scale on the right.
   - The purple end of the colour gradient indicates a lower z-axis position, with the opposite yellow end of the spectrum indicating higher position.

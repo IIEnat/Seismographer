@@ -12,6 +12,7 @@ See [README.md](../README.md)
     - Flask server.
     - ObsPy for handling seedlink data.
     - NumPy for calculations.
+    - SciPy for data filtering.
     - Modular design:
       - `receiver.py`: Connects to SeedLink or synthetic generators, processes signals.
       - `ingest.py`: Handles band/envelope streams and signal processing.
@@ -125,7 +126,7 @@ All tunable parameters are set in [`config.py`](../main/config.py):
 ## Suggestions for Future Development
 
 - **User Experience**
-  - Add tooltips, help popups, and a dedicated manual page within the application.
+  - Add tooltips, help pop-ups, and a dedicated manual page within the application.
   - Create a single executable file that can elegantly run the server and open it in a browser.
 
 - **Functionality**
