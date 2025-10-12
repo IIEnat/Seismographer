@@ -26,4 +26,4 @@ Envelope extraction is performed after band-pass filtering, again within the `St
 **Decimation**: The envelope, originally at the native sampling rate, is then downsampled to the target UI rate (5 Hz) using zero-phase decimation in `_env_5hz_from_block()`.  This makes the envelope suitable for real-time display and further analysis.
 
 ## RMS (Root Mean Square)
-RMS is used in [`playback_routes.py](../main/python/playback_routes.py) within `playback_stats()` to obtain a average signal amplitude for colour representation on the playback map.   The RMS value is computed by squaring each sample in the signal, averaging these squares over the window, and then taking the square root of the result. This is typically done using NumPy functions for efficiency.
+RMS is used in [playback_routes.py](../main/python/playback_routes.py) within `playback_stats()` to obtain a average signal amplitude for colour representation on the playback map.   The RMS value is computed by squaring each sample in the signal, averaging these squares over the window, and then taking the square root of the result. This is typically done using NumPy functions for efficiency.
