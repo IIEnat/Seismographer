@@ -38,7 +38,7 @@ See [README.md](../README.md)
 - Registers blueprints (e.g. playback routes).
 
 ### `config.py`
-- Centralizes all tunable parameters (see Configuration Reference below for details):
+- Centralizes all tuneable parameters (see Configuration Reference below for details):
 
 ### `python/receiver.py`
 - Handles connection to SeedLink servers or synthetic data generators.
@@ -88,7 +88,7 @@ See [README.md](../README.md)
 
 ## Configuration Reference
 
-All tunable parameters are set in [`config.py`](../main/config.py):
+All tuneable parameters are set in [`config.py`](../main/config.py):
 
 - **Station Connectivity:**
   - `HOSTS`: List containing SeedLink host IP `string`s.
@@ -96,7 +96,7 @@ All tunable parameters are set in [`config.py`](../main/config.py):
   - `CHAN`: Channel code `string`.
 
 - **Simulation:**
-  - `SIMULATE`: Whether or not to use real or simulated data.  Can be set with a boolean but any other value (i.e. "auto") will attempt real first before defaulting to simulated.
+  - `SIMULATE`: Whether to use real or simulated data.  Can be set with a `bool` but any other value (i.e. "auto") will attempt real first before defaulting to simulated.
   - `COORDS`: Demo coordinates for simulated running.  Takes a `dict` with station name `string`s as keys and a `tuple` containing latitude and longitude in decimal degrees form (`float`s) as values.
 
 - **Sampling and Filtering:**
@@ -111,7 +111,7 @@ All tunable parameters are set in [`config.py`](../main/config.py):
   - `STARTUP_SECONDS`: Countdown shown to frontend on startup.  Takes an `int` for number of seconds, but should normally be equal to `BATCH_SECONDS`.
 
 - **Seam Smoothing:**
-  - `PATCH_TAIL_SECONDS`: Number of seconds as `float` from previous block of data to stitch together with the next block to smooth reduce edge artfacts.
+  - `PATCH_TAIL_SECONDS`: Number of seconds as `float` from previous block of data to stitch together with the next block to smooth reduce edge artefacts.
   - `PATCH_INTERVAL_SECONDS`: Interval of how often patching is done.  Takes `float` for number of seconds.
 
 - **UI:**
@@ -120,7 +120,7 @@ All tunable parameters are set in [`config.py`](../main/config.py):
 
 - **Miscellaneous:**
   - `RAW_SECONDS`: `int` for number of seconds of waveform history kept in `/raw` endpoint.
-  - `SPEED_FACTOR`: Multiplyer for how fast playback should occur.  Takes a `float`
+  - `SPEED_FACTOR`: Multiplier for how fast playback should occur.  Takes a `float`
 
 
 ## Suggestions for Future Development
@@ -132,4 +132,4 @@ All tunable parameters are set in [`config.py`](../main/config.py):
 - **Functionality**
   - Implement a database to save the live seismic streams.
   - Use a gradient colour overlay on the map instead of individually coloured stations to better visualise waves.
-  - Implement a conversion from the meaningless voltage measures given by seismometers (and currently displayed) to displacement in micrometers.
+  - Implement a conversion from the meaningless voltage measures given by seismometers (and currently displayed) to displacement in micrometres.

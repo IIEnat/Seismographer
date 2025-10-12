@@ -5,7 +5,7 @@
 ## Installation
 1. Get a local copy of the project onto your Linux device either by cloning the Github repository or simply downloading it as a `.zip` file and extracting it.
 2. Open a command-line interface like terminal and navigate to the `main/` directory within the project.
-3. To install the dependancies required by the project run the following command:
+3. To install the dependencies required by the project run the following command:
 ```
 $ pip install -r requirements.txt
 ```
@@ -37,7 +37,7 @@ $ python3 app.py
 - Map will show the activity of connected seismometers and will update as new data arrives.
 - The colour of each station indicates its relative up-down seismic activity according to the scale on the right.
   - The purple end of the colour gradient indicates a lower z-axis position, with the opposite yellow end of the spectrum indicating higher position.
-  - A red coloured station indicates and error with the data that station is recieving (out of range or missing).
+  - A red coloured station indicates and error with the data that station is receiving (out of range or missing).
 - Also shown on the right:
   - The network code the seismometers are on.
   - The rate the data is being streamed to the web app.
@@ -59,4 +59,4 @@ $ python3 app.py
    - The currently selected seismometer.
    - Whether the selected files are currently being played.
 - Down the bottom of the page you'll see a graph showing the raw seismic reading from the selected seismometer.
-   - At the top of this graph is functionality to play and pause the playback as well as a slider the control the timeline and information about the files timeline.
+   - At the top of this graph is functionality to play and pause the playback as well as a slider the control the timeline and information about the file's timeline.

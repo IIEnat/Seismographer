@@ -50,14 +50,21 @@ Seismographer/
     │   └── receiver.py                     # Data ingestion from SeedLink or synthetic sources
     ├── requirements.txt                    # Python dependencies
     ├── static/                             # Static files for frontend
-    │   └── css/                            # CSS files
-    │       └── global.css                  # Global stylesheet
+    │   ├── css/                            # CSS files
+    │   │   └── global.css                  # Global stylesheet
+    │   └── tiles/                          # Map tile images for offline map
     ├── templates/                          # HTML templates for web pages
     │   ├── home.html                       # Main map and live view
     │   ├── navbar.html                     # Navigation bar
     │   └── playback.html                   # Playback page
+    ├── tests/                              # Unit and integration tests         
+    │   ├── conftest.py                     # Pytest configuration and fixtures
+    │   ├── test_location_fallbacks.py      # Tests for location retrieval fallback logic
+    │   ├── test_playback_upload.py         # Tests for playback file upload and handling
+    │   └── test_rms.py                     # Tests for RMS calculation functions
     └── uploads/                            # Directory for uploaded .miniseed and .mseed files
 ```
+
 
 ## Further Documentation
 For the basics on how to use the app see [user_manual.md](docs/user_manual.md).
