@@ -18,17 +18,14 @@ The variable `HOSTS` within the `# Stations / connectivity` section must be set 
 This may require configuring a static IP address for the seismometers by connecting to the network the seismometers are on and going to `169.254.33.33` (3 channel model) or `169.254.35.35` (6 channel model).  Log in and go to settings > network > static IP.  Then type `192.168.0.XX` (for WARXX), click on seedlink server, and add a seedlink server with default settings.
 
 ## Running
-1. Connect to the network that the seismometers are connected on.
-  - Note that if a problem arises here the app will likely default to fake simulated data.
+1. Connect to the network that the seismometers are connected on.  Note that if a problem arises here the app will likely default to fake simulated data.
 2. Similar to installation, open a command-line interface like terminal and navigate to the `main/` directory.
 3. To start the server that runs the application run:
 ```
 $ python3 app.py
 ```
-- Allow a few seconds for the server to start up.
-- The web app can then be accessed by opening a web browser and going to `https://127.0.0.1:5000`.
-  - Often this can be shortcut by holding `ctrl` and clicking on `https://127.0.0.1:5000` in the terminal.
-- The app will lauch displaying a popup 
+4. Allow a few seconds for the server to start up.
+5. The web app can then be accessed by opening a web browser and going to `https://127.0.0.1:5000`.  Often this can be shortcut by holding `ctrl` and clicking on `https://127.0.0.1:5000` in the terminal.
 
 ## Usage
 
