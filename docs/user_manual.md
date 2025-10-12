@@ -5,7 +5,7 @@
 ## Installation
 1. Get a local copy of the project onto your Linux device either by cloning the Github repository or simply downloading it as a `.zip` file and extracting it.
 2. Open a command-line interface like terminal and navigate to the `main/` directory within the project.
-3. To install the dependencies required by the project run the following command:
+3. To install the dependencies required by the app run the following command:
 ```
 $ pip install -r requirements.txt
 ```
@@ -19,7 +19,7 @@ This may require configuring a static IP address for the seismometers by connect
 
 ## Running
 1. Connect to the network that the seismometers are connected on.
-- Note that if a problem arises here the app will likely default to fake simulated data.
+  - Note that if a problem arises here the app will likely default to fake simulated data.
 2. Similar to installation, open a command-line interface like terminal and navigate to the `main/` directory.
 3. To start the server that runs the application run:
 ```

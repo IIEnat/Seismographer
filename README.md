@@ -71,7 +71,7 @@ For the basics on how to use the app see [user_manual.md](docs/user_manual.md).
 
 For details on the app's architecture, backend modules, data flow, and code structure see [developer_documentation.md](docs/developer_documentation.md).
 
-For technical specifications on the seismic data and its processing see [technical_user_documentation.md](docs/technical_user_documentation.md)
+For technical specifications on the seismic data and its processing see [technical_user_documentation.md](docs/technical_user_documentation.md).
 
 ## License
 This project is licensed under the terms of the GNU General Public License v3.0.  See [COPYING.txt](COPYING.txt) for more information.

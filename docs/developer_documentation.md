@@ -7,7 +7,7 @@ See [README.md](../README.md)
 
 ## Technical Stack
 
-- **Backend:**
+**Backend:**
   - Python
     - Flask server.
     - ObsPy for handling seedlink data.
@@ -19,7 +19,7 @@ See [README.md](../README.md)
       - `location_retrieval.py`: Retrieves and manages station location data.
       - `playback_routes.py`: Implements playback features and endpoints.
 
-- **Frontend:**
+**Frontend:**
   - HTML, CSS, JavaScript.
   - Leaflet for interactive mapping.
   - Custom CSS for UI styling.
