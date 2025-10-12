@@ -122,6 +122,20 @@ All tuneable parameters are set in [`config.py`](../main/config.py):
   - `RAW_SECONDS`: `int` for number of seconds of waveform history kept in `/raw` endpoint.
   - `SPEED_FACTOR`: Multiplier for how fast playback should occur.  Takes a `float`
 
+## Tests
+Automated tests are provided in the `main/tests/` directory to ensure reliability and correctness of some of the core functionality. All tests use the `pytest` framework.
+
+- **`conftest.py`**  
+  Contains shared fixtures and setup code for use across multiple test files. This includes sample data generation and configuration overrides.
+
+- **`test_location_fallbacks.py`**  
+  Verifies the logic for fallback when retrieving station locations and primary sources are unavailable. Ensures correct handling of missing or malformed location data.
+
+- **`test_playback_upload.py`**  
+  Tests the upload and handling of MiniSEED files in playback mode. Checks file validation, error handling, and correct parsing of seismic data for playback.
+
+- **`test_rms.py`**  
+  Validates the RMS calculation functions used for signal amplitude analysis. Includes tests for edge cases, such as empty or constant signals, and compares results against expected values.
 
 ## Suggestions for Future Development
 
