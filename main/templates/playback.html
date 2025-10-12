@@ -286,10 +286,12 @@ HTML & JS for /playback page
         function ensureMap() {
             if (map) return;
             map = L.map('seismicMap', { preferCanvas: true }).setView([-31.35, 115.92], 10);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(map);
-            requestAnimationFrame(() => map.invalidateSize());
-            window.addEventListener('resize', () => map.invalidateSize());
+            L.tileLayer("/static/tiles/{z}/{x}/{y}.png", {
+            minZoom: 11,
+            maxZoom: 16,
+            attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+            map.setView([-31.35,115.92], 14);
         }
 
         // Populate station dropdown menu in controls
