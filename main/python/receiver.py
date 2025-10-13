@@ -1,4 +1,4 @@
-# --- START OF python/receiver.py ---
+from __future__ import annotations
 """
 receiver.py — 30 s buffered start, then drip at 5 Hz.
 Seam is smoothed exactly once per block boundary using look-ahead into the next
@@ -6,7 +6,17 @@ block head; no periodic re-patching (prevents saw-tooth artifacts).
 
 All tunables are static in config.py.
 """
-from __future__ import annotations
+
+"""
+@file receiver.py
+@brief Real-time station processing: band-pass, envelope, decimation, and seam smoothing.
+@details
+- Buffers an initial batch (BATCH_SECONDS) of native-rate samples before emitting.
+- Computes band-pass and analytic envelope, then decimates both to TARGET_HZ (~5 Hz).
+- Performs a **one-time seam fix** at each block boundary using prev-tail/next-head data.
+- Drips precomputed 5 Hz series to the UI at a rate proportional to input chunk size.
+- Coordinates are resolved lazily from the device API (with backoff) to populate the UI.
+"""
 
 from collections import deque
 from dataclasses import dataclass
@@ -25,21 +35,33 @@ from python.location_retrieval import get_location_or_fallback
 import time
 import socket
 
-## Changed this so that it imports real-time data instead of dummy data from ingest.py
+# Changed this so that it imports real-time data instead of dummy data from ingest.py
 from obspy.clients.seedlink.easyseedlink import EasySeedLinkClient
 # fallback simulator (keeps Trace→process_chunk shape)
 from python.ingest import SimEasySeedLinkClient  
 
 MODE = "real"
 
-# ---------------------------- Data classes ------------------------------
+# ------------------------------------------------------------------------
+# Data classes
+# ------------------------------------------------------------------------
+
 @dataclass
 class Queues:
+    """
+    @brief Fixed-size queues for downsampled series displayed in the UI.
+    @details
+    - `band`: band-pass output at TARGET_HZ.
+    - `env` : analytic envelope (Hilbert magnitude) at TARGET_HZ.
+    """
     band: deque[float]
     env: deque[float]
 
 
-# --------------------------- Core processor -----------------------------
+# ------------------------------------------------------------------------
+# Core processor
+# ------------------------------------------------------------------------
+
 class StationProcessor:
     """
     Startup
@@ -50,8 +72,17 @@ class StationProcessor:
     Streaming
       • For each completed block, drip its precomputed 5 Hz series.
       • At each block boundary, smooth the seam once using prev tail + next head.
-    """
 
+    @brief Per-station signal processor handling buffering, DSP, and UI queues.
+    @param host Device IP or hostname.
+    @param net  Network code (e.g., "GG").
+    @param sta  Station code (e.g., "WAR27").
+    @param chan Channel code (e.g., "HNZ").
+    @param fs   Native sampling rate (Hz). Default from CFG.FS.
+    @param band Band-pass (low, high) in Hz. Default from CFG.BAND.
+    @param qsize UI queue length (number of 5 Hz points). Default from CFG.QSIZE.
+    @param raw_seconds Length of native-rate raw ring buffer for diagnostics.
+    """
     def __init__(
         self,
         host: str,
@@ -80,11 +111,11 @@ class StationProcessor:
         lo, hi = band
         wn = (max(lo, 1e-4) / (self.fs * 0.5), max(hi, 2e-4) / (self.fs * 0.5))
         self._sos = signal.butter(4, wn, btype="bandpass", output="sos")
-        self._zi = signal.sosfilt_zi(self._sos) * 0.0
+        self._zi = signal.sosfilt_zi(self._sos) * 0.0 # filter state (reset for each instance)
 
         # Block state (native fs)
-        self._block_n = int(round(self.fs * CFG.BATCH_SECONDS))
-        self._block_hist = deque(maxlen=self._block_n)
+        self._block_n = int(round(self.fs * CFG.BATCH_SECONDS)) # samples per processing block
+        self._block_hist = deque(maxlen=self._block_n)          # rolling accumulation within the block
         self._samples_in_block = 0
 
         # Pending 5 Hz series to drip
@@ -108,6 +139,12 @@ class StationProcessor:
 
     # ---- DSP helpers ----
     def _bandpass(self, x: np.ndarray) -> np.ndarray:
+        """
+        @brief Apply IIR band-pass (SOS) to native-rate samples.
+        @param x Input array at native sampling rate.
+        @return Band-passed signal (float64).
+        @note Uses `signal.sosfilt` with instance-held filter state `_zi`.
+        """
         y, self._zi = signal.sosfilt(self._sos, np.asarray(x, dtype=np.float64), zi=self._zi)
         return y
 
@@ -115,6 +152,12 @@ class StationProcessor:
         """
         Zero-phase anti-aliased decimation from native fs to TARGET_HZ.
         Uses integer decimation when possible, otherwise rational resample.
+
+        @param x Native-rate input array.
+        @return Array decimated to ~TARGET_HZ as float.
+        @details
+        - Prefer `signal.decimate(..., zero_phase=True)` when fs is an integer multiple of TARGET_HZ.
+        - Fallback to `signal.resample_poly(up=tgt, down=fs)` with gcd reduction.
         """
         if x.size == 0:
             return np.empty(0, dtype=float)
@@ -135,6 +178,9 @@ class StationProcessor:
         """
         True analytic envelope (Hilbert magnitude) at native fs, gently smoothed
         with a zero-phase lowpass to avoid ripple.
+
+        @param band_native Band-passed native-rate signal.
+        @return Smoothed non-negative envelope (float).
         """
         if band_native.size == 0:
             return np.empty(0, dtype=float)
@@ -152,6 +198,7 @@ class StationProcessor:
         """Envelope at native fs -> zero-phase decimate to TARGET_HZ."""
         env_native = self._env_native(band_native_block)
         return self._decimate_to_5hz(env_native)
+    
     # ---- one-time seam fix at block boundary ----
     def _patch_seam_once(self, cur_block: np.ndarray, env5_cur: np.ndarray) -> np.ndarray:
         """
@@ -159,6 +206,11 @@ class StationProcessor:
         with Hilbert, then zero-phase decimate to 5 Hz and patch:
           • tail of already-published q.env
           • head of env5_cur
+
+        @param cur_block Current completed native-rate block.
+        @param env5_cur  Envelope for the current block at TARGET_HZ (precomputed).
+        @return Patched envelope at TARGET_HZ for the current block.
+        @note Only the envelope is patched; band-pass values are left as-is.
         """
         if self._last_block is None or self._seam_tail_n <= 0 or self._seam_tail_pts <= 0:
             return env5_cur
@@ -209,8 +261,13 @@ class StationProcessor:
     # ---- main streaming method ----
     def _maybe_refresh_location(self) -> None:
         """
-        If we don’t yet have coordinates, try to fetch them at most once every 20s.
+        If we don't yet have coordinates, try to fetch them at most once every 20s.
         This keeps the UI responsive and eventually fills lat/lon when the API is ready.
+
+        @details
+        - Uses `get_location_or_fallback(host, timeout=(3,10))`.
+        - Swallows exceptions to avoid disrupting the main ingest loop.
+        - Backed off by an internal timestamp to avoid spamming the device.
         """
         if getattr(self, "_simulated", False):
             return
@@ -230,6 +287,22 @@ class StationProcessor:
             pass
 
     def process_chunk(self, trace: Trace) -> None:
+        """
+        @brief Ingest a chunk of native-rate samples and update UI queues.
+        @param trace ObsPy Trace at native sampling rate.
+
+        Processing steps:
+        1) Refresh coordinates opportunistically.
+        2) Append raw samples to the native ring buffer.
+        3) Band-pass filter and accumulate into the current block.
+        4) When a full block is ready:
+           - Compute band/envelope at TARGET_HZ.
+           - One-time seam patch (envelope only).
+           - Queue downsampled series for dripping.
+           - Mark `ready=True` after the first block.
+        5) Drip a number of 5 Hz points proportional to input chunk duration.
+        6) Update envelope min/max and UI timestamp.
+        """
         self._maybe_refresh_location()
         x = np.asarray(trace.data, dtype=np.float64)
         if x.size == 0:
@@ -302,6 +375,11 @@ class StationProcessor:
 
     # ---- JSON for the UI sender ----
     def to_json(self) -> dict:
+        """
+        @brief Produce a compact JSON-serializable snapshot for the UI sender.
+        @return Dict containing readiness, timestamp, queue lengths, min/max,
+                coordinates, rounded series, and patch epoch.
+        """
         with self._lock:
             return {
                 "ready": self._ready,
@@ -318,6 +396,11 @@ class StationProcessor:
             }
 
     def latest_raw(self) -> Optional[dict]:
+        """
+        @brief Return the latest raw native-rate samples (diagnostics/export).
+        @return Dict with start time ISO (`t0_iso`), sampling rate `fs`, and
+                `values` list; or `None` if no raw samples have been collected.
+        """
         with self._lock:
             vals = list(self._raw)
             if not vals:
@@ -327,11 +410,23 @@ class StationProcessor:
 
 # ----------------------------- Client glue ------------------------------
 def station_code_from_ip(host: str) -> str:
+    """
+    @brief Derive a default station code from an IPv4 address tail.
+    @param host IPv4 string (e.g., "192.168.0.33").
+    @return Station code like "WAR33".
+    """
     tail = "".join([c for c in host.split(".")[-1] if c.isdigit()])
     return f"WAR{tail.zfill(2)}"
 
 
 def _run_client(proc: StationProcessor) -> None:
+    """
+    @brief SeedLink client runner (blocking).
+    @details
+    - Hooks `on_data` to forward ObsPy `Trace` chunks to the processor.
+    - Selects the (net, sta, chan) stream and enters the client's blocking loop.
+    - Intended to be run in a daemon thread.
+    """
     def on_data(trace: Trace) -> None:
         proc.process_chunk(trace)
 
@@ -368,12 +463,24 @@ def _run_client(proc: StationProcessor) -> None:
 
 
 def make_processors(hosts: Optional[List[str]] = None) -> List[StationProcessor]:
+    """
+    @brief Construct StationProcessor objects for a list of hosts.
+    @param hosts Optional list of host strings; defaults to CFG.HOSTS.
+    @return List of initialized StationProcessor instances (not started).
+    """
     hs = hosts or CFG.HOSTS
     return [StationProcessor(h, CFG.NET, station_code_from_ip(h), CFG.CHAN) for h in hs]
 
 
 def start_processor_thread(proc: StationProcessor) -> Thread:
+    """
+    @brief Start a daemon thread for a single processor’s SeedLink client loop.
+    @param proc StationProcessor instance.
+    @return Thread object (already started, daemon=True).
+    """
     t = Thread(target=_run_client, args=(proc,), daemon=True)
     t.start()
     return t
-# --- END OF python/receiver.py ---
+
+
+

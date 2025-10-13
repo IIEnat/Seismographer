@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+from __future__ import annotations
 """
 location_retrieval.py
 
@@ -12,15 +12,23 @@ Public functions:
 CLI examples:
     python3 -m python.location_retrieval --host 192.168.0.33
     python3 -m python.location_retrieval --host 192.168.0.33 --latlon
+
+@file location_retrieval.py
+@brief Utilities to fetch and parse station coordinates from the device SOH API.
+@details
+- Looks up the key "instrument/earthLocation" in a nested JSON payload.
+- Parses values formatted like "31.978712S 115.816727E -12m".
+- Exposes convenience helpers that return (lat, lon) floats with sensible fallbacks.
 """
 
-from __future__ import annotations
 import argparse, json, re, requests
 from typing import Any, Optional, List, Tuple
 
+# JSON key containing the earth location payload (value/time)
 KEY = "instrument/earthLocation"
 
 # Regex parser for "31.978712S 115.816727E -12m"
+# Captures numeric latitude/longitude with N/S and E/W hemispheres plus optional elevation.
 _LOC_RE = re.compile(
     r"""
     (?P<lat>-?\d+(?:\.\d+)?)\s*(?P<lat_hemi>[NS])
@@ -32,7 +40,14 @@ _LOC_RE = re.compile(
 )
 
 def find_key_path(obj: Any, target: str, path: Optional[List[str]] = None):
-    """DFS to find the first occurrence of `target` key in nested dict/list."""
+    """
+    DFS to find the first occurrence of `target` key in nested dict/list.
+
+    @param obj    Arbitrary JSON-like structure (dict/list/scalars).
+    @param target Key to search for (string).
+    @param path   Internal accumulator for the current traversal path.
+    @return (path_list, value) if found, otherwise (None, None).
+    """
     if path is None:
         path = []
     if isinstance(obj, dict):
@@ -50,7 +65,12 @@ def find_key_path(obj: Any, target: str, path: Optional[List[str]] = None):
     return None, None
 
 def _parse_latlon(value: str) -> Optional[Tuple[float, float]]:
-    """Parse '31.978712S 115.816727E -12m' into (-31.978712, 115.816727)."""
+    """
+    Parse '31.978712S 115.816727E -12m' into (-31.978712, 115.816727).
+
+    @param value Raw location string from the SOH payload (may include elevation).
+    @return (lat, lon) where South/West are negative; None if parsing fails.
+    """
     m = _LOC_RE.search(value)
     if not m:
         return None
@@ -66,6 +86,14 @@ def _fetch_soh_with_quick_then_slow(host: str) -> Optional[dict]:
     """
     Try a quick fetch first; if that fails, try one slower pass.
     Returns parsed JSON dict or None.
+
+    @param host Device IP/hostname (e.g., "192.168.0.33").
+    @return Parsed JSON object from /api/v1/instruments/soh or None.
+
+    @details
+    - Attempts two URL shapes (with and without trailing slash) to accommodate firmware differences.
+    - First pass uses short connect/read timeouts; second pass relaxes timeouts.
+    - Uses 'Connection: close' to avoid lingering sockets on embedded devices.
     """
     urls = [
         f"http://{host}/api/v1/instruments/soh",
@@ -99,6 +127,10 @@ def get_raw_earthlocation(host: str, timeout: Tuple[float, float] = (3.0, 5.0)) 
     """
     Return the raw earthLocation dict {'value':..., 'time':...} or None.
     (timeout param kept for signature-compat; helper uses its own quick/slow.)
+
+    @param host    Device IP/hostname.
+    @param timeout (connect, read) seconds — retained for compatibility, not used directly here.
+    @return {'value': <str>, 'time': <iso8601>} or None if key not found/unavailable.
     """
     data = _fetch_soh_with_quick_then_slow(host)
     if data is None:
@@ -110,7 +142,14 @@ def get_raw_earthlocation(host: str, timeout: Tuple[float, float] = (3.0, 5.0)) 
     return None
 
 def get_location(host: str, timeout: Tuple[float, float] = (3.0, 5.0), fallback: Optional[Tuple[float, float]] = None) -> Optional[Tuple[float, float]]:
-    """Return (lat, lon) or None (or fallback if provided)."""
+    """
+    Return (lat, lon) or None (or fallback if provided).
+
+    @param host     Device IP/hostname.
+    @param timeout  (connect, read) seconds — retained for compatibility with callers.
+    @param fallback Optional (lat, lon) returned if parsing fails or SOH is unavailable.
+    @return (lat, lon) floats if parsed; otherwise fallback or None.
+    """
     earth = get_raw_earthlocation(host, timeout=timeout)
     if earth and isinstance(earth.get("value"), str):
         parsed = _parse_latlon(earth["value"])
@@ -119,11 +158,19 @@ def get_location(host: str, timeout: Tuple[float, float] = (3.0, 5.0), fallback:
     return fallback
 
 def get_location_or_fallback(host: str, timeout: Tuple[float, float] = (3.0, 5.0), fallback=None):
-    """Alias for get_location (for receiver.py compatibility)."""
+    """
+    Alias for get_location (for receiver.py compatibility).
+
+    @param host     Device IP/hostname.
+    @param timeout  (connect, read) seconds.
+    @param fallback Optional (lat, lon) to return if not resolvable.
+    @return (lat, lon) or fallback/None.
+    """
     return get_location(host, timeout=timeout, fallback=fallback)
 
 # -------- CLI for debugging --------
 def _cli():
+    """Simple CLI to dump the raw earthLocation or just parsed lat/lon."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="192.168.0.33")
     parser.add_argument("--latlon", action="store_true", help="Show only lat/lon")
