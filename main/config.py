@@ -54,7 +54,7 @@ PATCH_INTERVAL_SECONDS = 2.0        # How often to apply patching (s)
 # ------------------------------------------------------------------------
 
 FRONTEND_FORCE_REDRAW_SECONDS = 40  # UI redraw safety interval (s)
-STATION_RADIUS = 1000               # Station marker radius (m) for UI
+STATION_RADIUS = 35                 # Station marker radius (m) for UI
 
 # ------------------------------------------------------------------------
 # Development / testing speed controls (simulator only)

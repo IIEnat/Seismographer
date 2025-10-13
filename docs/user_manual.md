@@ -13,9 +13,7 @@ $ pip install -r requirements.txt
 ## Configuration
 For the application to connect to the seismometers, their static IP addresses must first be configured in [config.py](../main/config.py).
 
-The variable `HOSTS` within the `# Stations / connectivity` section must be set to contain a list of seismometer IP addresses as strings.
-
-This may require configuring a static IP address for the seismometers by connecting to the network the seismometers are on and going to `169.254.33.33` (3 channel model) or `169.254.35.35` (6 channel model).  Log in and go to settings > network > static IP.  Then type `192.168.0.XX` (for WARXX), click on seedlink server, and add a seedlink server with default settings.
+The variable `HOSTS` within the `# Stations / connectivity` section must be set to contain a list of seismometer IP addresses as strings.  This may require configuring a static IP address for the seismometers.
 
 ## Running
 1. Connect to the network that the seismometers are connected on.  Note that if a problem arises here the app will likely default to fake simulated data.
