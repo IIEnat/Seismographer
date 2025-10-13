@@ -21,7 +21,7 @@ TARGET_HZ = 5.0                # UI drip rate (band & env)
 QSIZE = 900                    # ~3 min @ 5 Hz
 RAW_SECONDS = 3                # keep ~3 s of native RAW for /raw
 FRONTEND_FORCE_REDRAW_SECONDS = 40
-STATION_RADIUS = 1000
+STATION_RADIUS = 75           # size of station circle
 
 
 # Strict buffering: accumulate one whole block before first output
