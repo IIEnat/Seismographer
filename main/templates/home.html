@@ -8,10 +8,10 @@ HTML & JS for / page
   <meta charset="utf-8" />
   <title>Live Seismic Map</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
-  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet.css') }}" />
+  <script src="{{ url_for('static', filename='vendor/leaflet.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/plotly.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='vendor/socket.io.min.js') }}"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/global.css') }}" />
 </head>
 <body>
