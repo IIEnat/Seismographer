@@ -52,7 +52,8 @@ Seismographer/
     ├── static/                             # Static files for frontend
     │   ├── css/                            # CSS files
     │   │   └── global.css                  # Global stylesheet
-    │   └── tiles/                          # Map tile images for offline map
+    │   ├── tiles/                          # Map tile images for offline map
+    │   └── vendor/
     ├── templates/                          # HTML templates for web pages
     │   ├── home.html                       # Main map and live view
     │   ├── navbar.html                     # Navigation bar
