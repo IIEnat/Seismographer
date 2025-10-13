@@ -53,7 +53,7 @@ Seismographer/
     │   ├── css/                            # CSS files
     │   │   └── global.css                  # Global stylesheet
     │   ├── tiles/                          # Map tile images for offline map
-    │   └── vendor/
+    │   └── vendor/                         # Locally downloaded libs for Leaflet, socket, plotly modules
     ├── templates/                          # HTML templates for web pages
     │   ├── home.html                       # Main map and live view
     │   ├── navbar.html                     # Navigation bar
