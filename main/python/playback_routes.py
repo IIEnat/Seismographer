@@ -1,4 +1,38 @@
 from __future__ import annotations
+"""
+@file playback_routes.py
+@brief Flask Blueprint providing all playback endpoints.
+
+@details
+This module handles the **upload and playback** of MiniSEED files for seismic data.
+It allows users to explore waveform data in a time-slider UI and to fetch compact
+JSON structures for efficient client-side rendering.
+
+Key features:
+- **Upload management**:
+  - POST `/playback`: accept exactly one MiniSEED file and save it in `uploads/`.
+  - Old files are cleared so each upload starts fresh.
+
+- **Timeline support**:
+  - GET `/playback_timeline/<filenames>`: return global start/end times and number of
+    1-second slider steps across all uploaded files.
+
+- **Station data exports**:
+  - GET `/playback_json/<filenames>`: return per-station compact JSON (band + envelope,
+    downsampled for efficiency).
+  - GET `/playback_data/<filenames>/<slider>`: per-station RMS values for the selected
+    1-second window (map bubble intensity).
+  - GET `/playback_wave/<filenames>/<slider>/<station_id>`: full waveform slice for a
+    given station in that 1-second window.
+  - GET `/playback_stats/<filenames>`: vectorized server-side computation of global min
+    and max RMS values across the uploaded hour.
+
+Implementation notes:
+- Uses ObsPy (`read`, `Stream`, `Trace`) for parsing waveform files.
+- Groups traces by station (`NET.STA.LOC.CHA`) for consistent IDs.
+- Provides safe coordinate defaults (so the UI map never breaks).
+- Efficient per-second RMS stats via `numpy.bincount` for scalability.
+"""
 
 import os, glob, io
 from collections import defaultdict
@@ -16,24 +50,35 @@ import config as CFG
 
 def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
     """
-    Factory that returns a Blueprint encapsulating all playback endpoints and helpers.
+    @brief Factory that returns a Blueprint encapsulating all playback endpoints and helpers.
+    @param upload_dir Directory where uploaded MiniSEED files are stored.
+    @param awst_tz    Timezone object (AWST) used for ISO timestamps in responses.
+    @return Flask `Blueprint` named "playback".
     """
     bp = Blueprint("playback", __name__)
 
     # ---------- Data Extraction for JSON Structure ----------
     def extract_station_json(tr: Trace, env_fs: float = 1.0) -> dict:
         """
-        Extracts the required JSON structure for a single trace (station/channel).
-        Downsamples envelope and band arrays to env_fs (default 1Hz) for storage efficiency.
+        @brief Extract the compact JSON structure for a single trace (station/channel).
+        @param tr     ObsPy Trace with data and stats (sampling_rate, timing).
+        @param env_fs Target downsample rate for envelope/band arrays (default 1 Hz).
+        @return Dict with keys: timestamp, band_len, env_len, env_min, env_max, band, env.
+        @details
+        - Envelope is computed via Hilbert magnitude.
+        - Envelope & band arrays are decimated by simple striding to ~env_fs for storage efficiency.
+        - Arrays are capped to MAX=3600 samples.
         """
         # Envelope: absolute value of the analytic signal (Hilbert transform)
         from scipy.signal import hilbert, decimate
         data = np.asarray(tr.data, dtype=np.float64)
         if data.size == 0:
             return None
+        
         # Envelope calculation
         analytic = hilbert(data)
         envelope = np.abs(analytic)
+
         # Downsample envelope and band to 1Hz (or as close as possible)
         fs = float(getattr(tr.stats, "sampling_rate", 0.0) or 0.0)
         if fs <= 0:
@@ -41,11 +86,17 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
         decim = max(1, int(round(fs / env_fs)))
         env_ds = envelope[::decim]
         band_ds = data[::decim]
+
+        # Limit to one hour’s worth for compactness
         MAX = 3600
         env_ds  = env_ds[:MAX]
         band_ds = band_ds[:MAX]
+
+        # Simple stats for UI scaling
         env_min = float(np.min(env_ds)) if env_ds.size else 0.0
         env_max = float(np.max(env_ds)) if env_ds.size else 0.0
+
+        # Timestamp of the first sample, expressed in the provided timezone
         t0 = tr.stats.starttime.datetime.replace(tzinfo=awst_tz)
         return {
             "timestamp": t0.isoformat(),
@@ -60,8 +111,10 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
     @bp.route("/playback_json/<filenames>")
     def playback_json(filenames: str):
         """
-        Returns a JSON object for each station in the uploaded files, with the required structure.
-        Only the first trace for each station is used for demonstration.
+        @brief Build JSON objects for the first trace of each station in the uploaded files.
+        @param filenames Comma-separated list of uploaded filenames.
+        @return {"stations": [ {id, timestamp, band_len, ...} ]} (id = NET.STA.LOC.CHA)
+        @details Only the first trace per station is used for demonstration.
         """
         file_list = [f for f in filenames.split(",") if f]
         merged = _read_streams_for_files(file_list)
@@ -79,16 +132,21 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
 
     # ---------- Helpers (scoped to this blueprint) ----------
     def clear_uploads_folder() -> None:
-        """Remove previous batch so each upload is a fresh set."""
+        """
+        @brief Remove previous batch so each upload is a fresh set.
+        """
         for f in glob.glob(os.path.join(upload_dir, "*")):
             try:
                 os.remove(f)
             except Exception:
+                # Non-fatal if a file can't be removed
                 pass
 
     # Read all uploaded files into one ObsPy Stream, stores in a object
     def _read_streams_for_files(filenames: List[str]) -> Stream:
-        """Read all uploaded files into a single ObsPy Stream (concatenated)."""
+        """
+        @brief Read all uploaded files into a single ObsPy Stream (concatenated).
+        """
         merged = Stream()
         for fname in filenames:
             path = os.path.join(upload_dir, fname)
@@ -103,11 +161,15 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
         return merged
 
     def _station_id(tr: Trace) -> str:
-        """Stable station key: NET.STA.LOC.CHA"""
+        """
+        @brief Stable station key: NET.STA.LOC.CHA
+        """
         return f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}.{tr.stats.channel}"
 
     def _group_traces_by_station(stream: Stream) -> Dict[str, List[Trace]]:
-        """Group traces by station id."""
+        """
+        @brief Group traces by station id (NET.STA.LOC.CHA).
+        """
         grouped: Dict[str, List[Trace]] = {}
         for tr in stream:
             sid = _station_id(tr)
@@ -118,10 +180,14 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
         traces: List[Trace], t_start, t_end
     ) -> Tuple[np.ndarray, Tuple[float, str, None]]:
         """
-        Slice each trace in [t_start, t_end) and concatenate values.
-        Returns (values, (fs, t0_iso, None)).
-        - Concatenation means overlaps are combined back-to-back (for 1s windows this is fine).
-        - The slice with the MOST samples defines fs and t0.
+        @brief Slice each trace in [t_start, t_end) and concatenate values.
+        @param traces  List of ObsPy Traces for one station.
+        @param t_start ObsPy UTCDateTime start (inclusive).
+        @param t_end   ObsPy UTCDateTime end (exclusive).
+        @return (values, (fs, t0_iso, None))
+        @details
+        - Concatenation means overlaps are appended (fine for 1 s windows).
+        - The slice with the MOST samples defines fs and t0 for the output.
         """
         slices: List[np.ndarray] = []
         best = None  # (num_samples, fs, t0_iso, values)
@@ -148,8 +214,9 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
 
     def _hardcoded_latlon_for_trace(tr: Trace) -> Tuple[float, float]:
         """
-        Try to get coordinates from trace.stats, otherwise fall back to a sensible default
-        so Leaflet never breaks.
+        @brief Try to get coords from trace.stats; otherwise return a safe default
+               so Leaflet never breaks.
+        @return (lat, lon) — defaults to a Gingin-adjacent fallback.
         """
         try:
             coords = getattr(tr.stats, "coordinates", {}) or {}
@@ -168,7 +235,9 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
         return (lat, lon)
 
     def _coord_for_station(traces: List[Trace]) -> Tuple[float, float]:
-        """Pick coordinates from any trace (with fallback)."""
+        """
+        @brief Pick coordinates from any trace (with fallback).
+        """
         for tr in traces:
             lat, lon = _hardcoded_latlon_for_trace(tr)
             if lat is not None and lon is not None:
@@ -292,7 +361,14 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
 
 
     def playback():
-        """GET: render UI. POST: accept exactly ONE MiniSEED file and return its filename."""
+        """
+        @brief GET: render UI. POST: accept exactly ONE MiniSEED file and return its filename.
+        @details
+        POST:
+          - Clears previous uploads to keep each run isolated.
+          - Validates exactly one file.
+          - Saves the file to `upload_dir` and returns a JSON acknowledgement.
+        """
         if request.method == "POST":
             clear_uploads_folder()
 
@@ -319,8 +395,10 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
     @bp.route("/playback_timeline/<filenames>")
     def playback_timeline(filenames: str):
         """
-        Return the global start/end and slider steps (1-second step).
-        Timeline spans the union of all uploaded files.
+        @brief Return the global start/end and slider steps (1-second step).
+        @param filenames Comma-separated list of uploaded filenames.
+        @return JSON with `start_iso`, `end_iso`, `steps`.
+        @details Timeline spans the union of all uploaded files.
         """
         file_list = [f for f in filenames.split(",") if f]
         merged = _read_streams_for_files(file_list)
@@ -341,8 +419,11 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
     @bp.route("/playback_data/<filenames>/<int:slider>")
     def playback_data(filenames: str, slider: int):
         """
-        Return per-station RMS for the current 1-second window.
-        Multiple files for the same station are treated as one logical signal.
+        @brief Return per-station RMS for the current 1-second window.
+        @param filenames Comma-separated list of uploaded filenames.
+        @param slider    Integer slider index (seconds offset from global start).
+        @return {"slider": slider, "stations": [{id, lat, lon, rms}, ...]}
+        @details Multiple files for the same station are treated as one logical signal.
         """
         file_list = [f for f in filenames.split(",") if f]
         merged = _read_streams_for_files(file_list)
@@ -371,8 +452,11 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
     @bp.route("/playback_wave/<filenames>/<int:slider>/<path:station_id>")
     def playback_wave(filenames: str, slider: int, station_id: str):
         """
-        Return the 1-second waveform slice for one station.
-        If multiple files contain that station, we combine their samples within the window.
+        @brief Return per-station RMS for the current 1-second window.
+        @param filenames Comma-separated list of uploaded filenames.
+        @param slider    Integer slider index (seconds offset from global start).
+        @return {"slider": slider, "stations": [{id, lat, lon, rms}, ...]}
+        @details Multiple files for the same station are treated as one logical signal.
         """
         file_list = [f for f in filenames.split(",") if f]
         merged = _read_streams_for_files(file_list)
@@ -395,9 +479,13 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
     @bp.route("/playback_stats/<filenames>")
     def playback_stats(filenames: str):
         """
-        Compute per-second RMS across the entire uploaded hour in one pass (server-side).
-        Returns the global min/max RMS (value + station id + timestamp ISO).
-        Efficient: vectorized binning by second using np.bincount; no N requests from client.
+        @brief Compute per-second RMS across the entire uploaded hour server-side.
+        @param filenames Comma-separated list of uploaded filenames.
+        @return {"min": {"value","id","iso"} | None, "max": {"value","id","iso"} | None}
+        @details
+        - Efficient: vectorized binning by second using `np.bincount`.
+        - Works over Z-channels only (consistent with map badges).
+        - Avoids the need for the client to request N separate windows.
         """
         file_list = [f for f in filenames.split(",") if f]
         merged = _read_streams_for_files(file_list)
@@ -470,6 +558,9 @@ def create_playback_blueprint(upload_dir: str, awst_tz: timezone) -> Blueprint:
                 best_max = (float(ma_val), sid, int(ma_idx))
 
         def pack(item):
+            """
+            @brief Pack (value, id, sec_idx) into a dict with ISO timestamp.
+            """
             if not item:
                 return None
             val, sid, sec_idx = item
